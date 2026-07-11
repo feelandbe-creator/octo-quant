@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 import datetime
 
-# --- 1. 데이터 수집 및 방어 로직 엔진 (업데이트) ---
+# --- 1. 데이터 수집 및 방어 로직 엔진 (최신 문법 호환 업데이트) ---
 @st.cache_data(show_spinner=False)
 def fetch_comprehensive_market_data(tickers, start_date, end_date):
     # 야후 파이낸스 API 호출
@@ -23,7 +23,8 @@ def fetch_comprehensive_market_data(tickers, start_date, end_date):
         st.error("야후 파이낸스 통신 오류: 필수 데이터를 수신하지 못했습니다. 1~2분 후 새로고침해 주십시오.")
         st.stop()
         
-    data.fillna(method='ffill', inplace=True)
+    # [최신화 패치] Pandas 2.0 이상 최신 버전 문법 호환
+    data.ffill(inplace=True)
     data.dropna(inplace=True)
     return data
 
@@ -87,7 +88,6 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=365 * lookback_years)
         
-        # [업데이트] 불안정한 달러 인덱스 티커(DX-Y.NYB)를 가장 안정적인 달러 선물(DX=F)로 교체
         macro_tickers = ['QQQ', '^GSPC', 'DIA', '^TNX', 'DX=F', '^VIX', 'CL=F']
         all_tickers = list(set(macro_tickers + [target_stock]))
         
