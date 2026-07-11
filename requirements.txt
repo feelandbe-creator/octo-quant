@@ -1,0 +1,8 @@
+streamlit
+yfinance
+pandas
+numpy
+fastdtw
+scipy
+scikit-learn
+plotly
