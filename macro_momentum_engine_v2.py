@@ -55,8 +55,8 @@ def fetch_comprehensive_market_data(tickers, start_date, end_date):
     compiled_data.dropna(inplace=True)
     return compiled_data
 
-# --- 2. [로직 수정] 클린 구간 추출 및 돌발 변수 구간 완전 격리 알고리즘 ---
-def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=3):
+# --- 2. 클린 구간 추출 및 돌발 변수 구간 완전 격리 알고리즘 ---
+def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=5):
     if target_stock not in df.columns: return [], {}, []
     valid_macros = [t for t in macro_tickers if t in df.columns]
     if not valid_macros: return [], {}, []
@@ -90,14 +90,12 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
         match_start_dt = df.index[i]
         future_end_dt = df.index[i + window_size + 20]
         
-        # 1차 매크로 VIX 필터
         if has_vix:
             past_window_dates_idx = range(i, i + window_size)
             past_vix_max = np.max(vix_data[past_window_dates_idx])
             if past_vix_max > 35.0:
                 continue 
         
-        # 2차 지정학적/정성적 돌발 변수 체크
         event_alerts = []
         for ev_date_str, ev_name in MAJOR_EVENTS.items():
             ev_date = pd.to_datetime(ev_date_str)
@@ -108,13 +106,10 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
         distance, _ = fastdtw(current_pattern, past_window, dist=euclidean)
         
         if event_alerts:
-            # 돌발 변수가 있는 국면은 통계 연산 후보군에서 즉시 격리
             excluded_distances.append((i, distance, event_alerts))
         else:
-            # 순수 평시 경제 논리 국면만 클린 후보군으로 등록
             clean_distances.append((i, distance))
             
-    # 순수 클린 구간만으로 상위 3위 정렬 및 보충 (보충 기간 자동 확보)
     clean_distances.sort(key=lambda x: x[1])
     top_matches = []
     selected_indices = []
@@ -124,16 +119,15 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
         top_matches.append((idx, dist))
         selected_indices.append(idx)
         
-    # 통계에서 탈락한 돌발 변수 구간 중 유사도가 가장 높았던 상위 2개 추출 (출력용)
     excluded_distances.sort(key=lambda x: x[1])
     top_excluded = excluded_distances[:2]
         
     return top_matches, weights, top_excluded
 
 # --- 3. UI/UX 대시보드 ---
-st.set_page_config(page_title="옥토만경님 전용 - V3.3 터미널", layout="wide")
-st.title("🛡️ 옥토만경님 전용: V3.3 프로페셔널 퀀트 터미널")
-st.markdown("대외 돌발 변수(전쟁 등) 구간 완전 격리 및 순수 평시 데이터 보충 시스템이 가동 중입니다.")
+st.set_page_config(page_title="옥토만경님 전용 - V3.4 터미널", layout="wide")
+st.title("🛡️ 옥토만경님 전용: V3.4 프로페셔널 퀀트 터미널")
+st.markdown("가변 표본 개수 설정 및 대외 변수 격리 시스템이 실시간 구동 중입니다.")
 
 st.sidebar.header("🎛️ 제어 패널")
 raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
@@ -141,10 +135,14 @@ target_stock = resolve_ticker(raw_input)
 st.sidebar.markdown(f"**해석된 티커:** `{target_stock}`")
 
 window = st.sidebar.slider("추세 분석 윈도우 (최근 N일간의 흐름)", min_value=15, max_value=90, value=45)
+
+# [수정 사항 반영] 옥토만경님의 지시대로 표본 개수를 동적으로 조절하는 핵심 마스터 슬라이더 배치
+top_n_input = st.sidebar.slider("유사 국면 매칭 개수 (N)", min_value=3, max_value=7, value=5)
+
 lookback_years = st.sidebar.slider("역사적 데이터 탐색 깊이 (년)", min_value=5, max_value=20, value=15)
 
 if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
-    with st.spinner(f"'{raw_input}' 데이터 분석 및 리스크 필터링 연산 중..."):
+    with st.spinner(f"'{raw_input}' 데이터 최적 표본 연산 및 리스크 필터링 중..."):
         
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=365 * lookback_years)
@@ -157,9 +155,9 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
             st.error(f"⚠️ '{raw_input}' 데이터를 수신하지 못했습니다.")
             st.stop()
             
-        top_matches, feature_weights, top_excluded = find_top_historical_matches(df, macro_tickers, target_stock, window_size=window, top_n=3)
+        # 가변 설정값 top_n_input을 연산 코어에 주입
+        top_matches, feature_weights, top_excluded = find_top_historical_matches(df, macro_tickers, target_stock, window_size=window, top_n=top_n_input)
         
-        # --- [신규] 🚫 대외 돌발 변수 격리 구간 모니터링 출력 ---
         if top_excluded:
             st.subheader("🚫 대외 돌발 변수 격리 구간 안내 (기대치 미반영)")
             for idx, dist, alerts in top_excluded:
@@ -169,7 +167,7 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
                 st.error(f"⚠️ 과거 구간 [{ex_start} ~ {ex_end}] 내에 **{event_str}**이 포함되어 있습니다. 이 이벤트 때문에 우리의 결과 종합통계적 모멘텀 기대치에는 반영하지 않겠습니다. (유사도 거리 점수: {dist:.2f})")
         
         if not top_matches:
-            st.warning("⚠️ 지정된 과거 기간 내에 클린 데이터가 부족합니다. 탐색 깊이를 늘려주십시오.")
+            st.warning("⚠️ 클린 데이터가 부족합니다. 탐색 깊이를 늘려주십시오.")
             st.stop()
             
         st.subheader("🎯 1. 현재 시장 지배 지표 분석")
@@ -177,27 +175,31 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         weight_fig.update_layout(yaxis_title="가중치", height=230, margin=dict(l=0, r=0, t=20, b=0))
         st.plotly_chart(weight_fig, use_container_width=True)
         
-        # --- 🔮 2. 앙상블 패턴 매칭 및 시나리오 (오직 보충된 클린 구간만 표시) ---
-        st.subheader("🔮 2. 앙상블 패턴 매칭 및 시나리오 (보충된 클린 구간 Top 3)")
+        # --- 🔮 2. 앙상블 패턴 매칭 및 시나리오 (N의 개수에 맞춰 유연한 그리드로 출력) ---
+        st.subheader(f"🔮 2. 앙상블 패턴 매칭 및 시나리오 (보충된 클린 구간 Top {len(top_matches)})")
         returns_list = []
-        cols = st.columns(3)
         
-        for rank, (match_idx, dist_score) in enumerate(top_matches):
-            m_start = df.index[match_idx].strftime('%Y-%m-%d')
-            m_end = df.index[match_idx + window].strftime('%Y-%m-%d')
-            p_curr = df[target_stock].iloc[match_idx + window]
-            p_future = df[target_stock].iloc[match_idx + window + 20]
-            ret = ((p_future - p_curr) / p_curr) * 100
-            returns_list.append(ret)
-            
-            with cols[rank]:
-                st.info(f"**[클린 상위 {rank+1}위]**")
-                st.write(f"📅 {m_start} ~ {m_end}")
-                st.metric("거리(낮을수록 일치)", f"{dist_score:.2f}")
-                st.metric("이후 20일 수익률", f"{ret:.2f}%", delta=f"{ret:.2f}%")
+        # 모바일 가로폭을 고려하여 최대 3열씩 끊어서 화면에 배치하는 안정화 레이아웃
+        for i in range(0, len(top_matches), 3):
+            chunk = top_matches[i:i+3]
+            cols = st.columns(len(chunk))
+            for rank, (match_idx, dist_score) in enumerate(chunk):
+                actual_rank = i + rank + 1
+                m_start = df.index[match_idx].strftime('%Y-%m-%d')
+                m_end = df.index[match_idx + window].strftime('%Y-%m-%d')
+                p_curr = df[target_stock].iloc[match_idx + window]
+                p_future = df[target_stock].iloc[match_idx + window + 20]
+                ret = ((p_future - p_curr) / p_curr) * 100
+                returns_list.append(ret)
+                
+                with cols[rank]:
+                    st.info(f"**[클린 상위 {actual_rank}위]**")
+                    st.write(f"📅 {m_start} ~ {m_end}")
+                    st.metric("거리(낮을수록 일치)", f"{dist_score:.2f}")
+                    st.metric("이후 20일 수익률", f"{ret:.2f}%", delta=f"{ret:.2f}%")
         
-        # --- 📊 3. 종합 통계적 모멘텀 기대치 (오직 클린 구간만으로 산출) ---
-        st.subheader("📊 3. 종합 통계적 모멘텀 기대치 (정밀 보정본)")
+        # --- 📊 3. 종합 통계적 모멘텀 기대치 (N개의 전체 클린 데이터로 평균 산출) ---
+        st.subheader(f"📊 3. 종합 통계적 모멘텀 기대치 (정밀 보정본 - 표본 {len(top_matches)}개 종합)")
         avg_return = np.mean(returns_list)
         win_rate = sum(1 for r in returns_list if r > 0) / len(returns_list) * 100
         
@@ -206,7 +208,7 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         c2.metric("통계적 상승 승률", f"{win_rate:.1f}%")
         c3.metric("최대 Max / Min", f"{max(returns_list):.1f}% / {min(returns_list):.1f}%")
         
-        # --- 📈 4. 예상 주가 경로 시뮬레이션 (오직 클린 구간만 매핑) ---
+        # --- 📈 4. 예상 주가 경로 시뮬레이션 ---
         st.subheader(f"📈 4. {target_stock}의 향후 예상 주가 경로 시뮬레이션")
         path_fig = go.Figure()
         curr_series = df[target_stock].iloc[-window:].values
@@ -223,4 +225,4 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         path_fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5), xaxis_title="경과 일수", yaxis_title="정규화 스케일")
         st.plotly_chart(path_fig, use_container_width=True)
         
-        st.success("🔒 본 리포트는 대외 돌발 변수가 제거된 순수 평시 경제학적 패턴 매칭 결과물입니다. 옥토만경님의 리스크 없는 정밀 자산 운용에 활용하십시오.")
+        st.success(f"🔒 [가변 표본 모드 완료] 옥토만경님의 설정에 따라 엄선된 {len(top_matches)}개의 순수 평시 경제학적 패턴 매칭 결과물입니다.")
