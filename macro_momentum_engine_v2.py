@@ -8,25 +8,29 @@ from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 import datetime
 import requests
-import urllib.parse # [핵심 추가] 한글 검색어를 야후 서버가 인식하도록 번역하는 모듈
+import urllib.parse
 
-# --- 0. [수정 완료] 스마트 티커 검색 및 변환 시스템 ---
+# --- [신규] 중대 역사적 이벤트 사전 (Event Dictionary) ---
+# 옥토만경님께서 필요에 따라 언제든 날짜와 사건명을 추가/수정하실 수 있습니다.
+MAJOR_EVENTS = {
+    "2026-02-28": "미국-이란 전쟁 시작",
+    "2022-02-24": "러시아-우크라이나 전쟁 발발",
+    "2020-03-11": "WHO 코로나19 팬데믹 선언",
+    "2020-03-23": "연준 무제한 양적완화(QE) 발표",
+    "2018-10-03": "미국 10년물 국채금리 7년 최고치 돌파 (긴축 발작)",
+    "2015-08-24": "중국 위안화 쇼크 (블랙 먼데이)"
+}
+
+# --- 0. 스마트 티커 검색 및 변환 시스템 ---
 def resolve_ticker(query):
     query = str(query).strip()
-    
-    # 1. 한국 주식 코드(6자리 숫자) 처리
     if query.isdigit() and len(query) == 6:
         return f"{query}.KS"
         
-    # 2. 한글이 포함되어 있거나 영문 소문자인 경우 야후 검색 API 가동
     if not query.isupper() or any(ord(c) > 127 for c in query):
-        # [핵심 방어] '삼성전자' 등 한글을 서버 전용 언어로 안전하게 번역(인코딩)
         encoded_query = urllib.parse.quote(query)
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_query}"
-        
-        # [핵심 방어] 야후 서버가 봇(Bot)으로 차단하지 못하도록 최신 크롬 브라우저로 위장
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        
         try:
             response = requests.get(url, headers=headers, timeout=5)
             if response.status_code == 200:
@@ -35,7 +39,6 @@ def resolve_ticker(query):
                     return data['quotes'][0]['symbol']
         except Exception:
             pass
-            
     return query.upper()
 
 # --- 1. 초정밀 개별 다운로드 및 병합 엔진 ---
@@ -110,21 +113,19 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
 
 # --- 3. UI/UX 대시보드 ---
 st.set_page_config(page_title="옥토만경님 전용 - V3 터미널", layout="wide")
-st.title("🛡️ 옥토만경님 전용: V3 프로페셔널 퀀트 터미널")
-st.markdown("블랙스완(극단적 시장 붕괴) 구간 배제 알고리즘 및 스마트 종목 검색이 적용된 3.1 엔진입니다.")
+st.title("🛡️ 옥토만경님 전용: V3.2 프로페셔널 퀀트 터미널")
+st.markdown("블랙스완 배제 및 중대 역사적 이벤트(전쟁, 위기) 자동 감지 시스템이 탑재되었습니다.")
 
 st.sidebar.header("🎛️ 제어 패널")
-raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드 (예: microsoft, 삼성전자, 005930)", value="삼성전자")
-
+raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
 target_stock = resolve_ticker(raw_input)
-
 st.sidebar.markdown(f"**해석된 티커:** `{target_stock}`")
 
 window = st.sidebar.slider("추세 분석 윈도우 (최근 N일간의 흐름)", min_value=15, max_value=90, value=45)
-lookback_years = st.sidebar.slider("역사적 데이터 탐색 깊이 (년)", min_value=5, max_value=20, value=12)
+lookback_years = st.sidebar.slider("역사적 데이터 탐색 깊이 (년)", min_value=5, max_value=20, value=15)
 
 if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
-    with st.spinner(f"'{raw_input}'(티커: {target_stock}) 데이터 수집 및 딥 매칭 중... (패닉 구간 제외 연산 포함)"):
+    with st.spinner(f"'{raw_input}'(티커: {target_stock}) 데이터 수집 및 딥 매칭 중... (패닉/이벤트 감지 포함)"):
         
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=365 * lookback_years)
@@ -158,18 +159,34 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         cols = st.columns(3)
         
         for rank, (match_idx, dist_score) in enumerate(top_matches):
-            m_start = df.index[match_idx].strftime('%Y-%m-%d')
-            m_end = df.index[match_idx + window].strftime('%Y-%m-%d')
+            match_start_dt = df.index[match_idx]
+            match_end_dt = df.index[match_idx + window]
+            future_end_dt = df.index[match_idx + window + 20] # 향후 20일 예측 종료 시점
+            
+            m_start = match_start_dt.strftime('%Y-%m-%d')
+            m_end = match_end_dt.strftime('%Y-%m-%d')
+            
             p_curr = df[target_stock].iloc[match_idx + window]
             p_future = df[target_stock].iloc[match_idx + window + 20]
             ret = ((p_future - p_curr) / p_curr) * 100
             returns_list.append(ret)
+            
+            # [핵심 로직] 과거 매칭 구간(현재 패턴 비교 구간 + 미래 20일 예측 구간) 내에 중대 이벤트가 포함되어 있는지 검사
+            event_alerts = []
+            for ev_date_str, ev_name in MAJOR_EVENTS.items():
+                ev_date = pd.to_datetime(ev_date_str)
+                if match_start_dt <= ev_date <= future_end_dt:
+                    event_alerts.append(f"[{ev_date_str}] {ev_name}")
             
             with cols[rank]:
                 st.info(f"**[상위 {rank+1}위]**")
                 st.write(f"📅 {m_start} ~ {m_end}")
                 st.metric("거리(낮을수록 일치)", f"{dist_score:.2f}")
                 st.metric("이후 20일 수익률", f"{ret:.2f}%", delta=f"{ret:.2f}%")
+                
+                # 이벤트가 감지되었을 경우 붉은색 경고 출력
+                if event_alerts:
+                    st.error("⚠️ 해당 기간 내 중대 이벤트 포함\n\n" + "\n".join(event_alerts))
         
         st.subheader("📊 3. 종합 통계적 모멘텀 기대치")
         avg_return = np.mean(returns_list)
@@ -203,4 +220,4 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         )
         st.plotly_chart(path_fig, use_container_width=True)
         
-        st.success("🔒 [블랙스완 방어 모드 가동] 과거 VIX 35 초과(전쟁, 팬데믹 등 극단적 패닉) 구간은 탐색에서 완전 배제되었습니다. 현재의 통계는 순수 경제 논리에 의한 매칭 결과입니다.")
+        st.success("🔒 [블랙스완 방어 모드 가동] 과거 VIX 35 초과 구간은 탐색에서 1차 배제되었으며, 연산된 결과 내부에 특정 역사적 충격이 포함되어 있을 경우 별도의 경고가 표시됩니다.")
