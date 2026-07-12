@@ -303,27 +303,27 @@ if run_sim:
         </div>
         """, unsafe_allow_html=True)
         
-        # [수정 완료] st.columns(4) 대신 맞춤형 HTML을 사용하여 조건부 컬러링 정밀 적용
-        win_rate_color = "#EF4444" if win_rate > 50 else "#3B82F6"
+        win_rate_color = "#EF4444" if win_rate >= 50 else "#3B82F6"
         avg_ret_color = "#EF4444" if avg_return > 0 else "#3B82F6"
         max_ret_color = "#EF4444"
         min_ret_color = "#3B82F6"
         
+        # [수정 완료] 1x4 구조를 2x2 Grid 구조로 변경하여 4개 사각형 크기 완벽 대칭 통일
         st.markdown(f"""
-        <div style="display: flex; gap: 15px; margin-bottom: 20px;">
-            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+            <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
                 <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">통계적 상승 승률</div>
                 <div style="color: {win_rate_color}; font-size: 28px; font-weight: 700;">{win_rate:.1f}%</div>
             </div>
-            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+            <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
                 <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">앙상블 평균 수익률</div>
                 <div style="color: {avg_ret_color}; font-size: 28px; font-weight: 700;">{avg_return:+.2f}%</div>
             </div>
-            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+            <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
                 <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">최대 상승 (Max)</div>
                 <div style="color: {max_ret_color}; font-size: 28px; font-weight: 700;">{max_ret:+.1f}%</div>
             </div>
-            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+            <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
                 <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">최대 하락 (Min)</div>
                 <div style="color: {min_ret_color}; font-size: 28px; font-weight: 700;">{min_ret:+.1f}%</div>
             </div>
@@ -332,7 +332,6 @@ if run_sim:
 
         st.markdown("#### 📌 정량적 매매 액션 플랜")
         
-        # [방향성 색상 부여를 위한 동적 포맷터 함수]
         def fmt_trend_color(val):
             return f"<span style='color:#EF4444; font-weight:700;'>{val:+.3f}</span>" if val > 0 else f"<span style='color:#3B82F6; font-weight:700;'>{val:+.3f}</span>"
 
@@ -345,7 +344,6 @@ if run_sim:
         if tech_data:
             p_price = tech_data['price']
             
-            # [수정 완료] 20일선 지지/저항 분기 및 색상 동적 렌더링
             if p_price >= tech_data['sma20']:
                 ma_val = tech_data['sma20']
                 ma_label = "20일선 지지"
@@ -355,7 +353,6 @@ if run_sim:
                 ma_label = "20일선 저항"
                 ma_color = "#3B82F6"
                 
-            # [수정 완료] RSI 과대매도(빨강)/과대매수(파랑) 적용
             if tech_data['rsi'] < 40:
                 rsi_stat = "과매도(<span style='color:#EF4444; font-weight:700;'>매수 유리</span>)"
             elif tech_data['rsi'] > 60:
@@ -363,32 +360,35 @@ if run_sim:
             else:
                 rsi_stat = "중립"
             
-            # [수정 완료] 거래량 폭발도 100% 기준 상승(빨강)/하락(파랑) 지표 분리
             vol_color = "#EF4444" if tech_data['vol_ratio'] >= 100 else "#3B82F6"
             vol_stat = "상승 지표" if tech_data['vol_ratio'] >= 100 else "하락 지표"
             
-            # [수정 완료] 거시 선물 추세 상승(빨강)/하락(파랑)
             macro_trend = df['^GSPC'].iloc[-1] - df['^GSPC'].iloc[-5]
             macro_stat = "<span style='color:#EF4444; font-weight:700;'>상승 추세</span>" if macro_trend > 0 else "<span style='color:#3B82F6; font-weight:700;'>하락 추세</span>"
             
+            # [수정 완료] 매물대(VP)가 현재가보다 높으면 저항선(파랑), 낮으면 지지선(빨강)으로 표시
             vp_val = tech_data['vp_support']
-            vp_label = "지지선" if p_price >= vp_val else "저항선"
+            if p_price >= vp_val:
+                vp_label = "지지선"
+                vp_color = "#EF4444"
+            else:
+                vp_label = "저항선"
+                vp_color = "#3B82F6"
             
             opt_text = ""
             if tech_data.get('opt_data'):
                 od = tech_data['opt_data']
-                # [수정 완료] 콜옵션(빨강)과 풋옵션(파랑)의 핵심 수치 색상 분리
                 opt_text = (f"<br>▶ <b style='color:#F9FAFB;'>스마트머니 옵션(OI) 현황</b> (최근월물: <b>{od['expiry']}</b>)<br>"
                             f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>콜옵션(상승) 최대 밀집:</b> 행사가 <b style='color:#EF4444;'>${od['call_strike']:.2f}</b> (미결제약정 <b style='color:#EF4444;'>{od['call_oi']:,}</b>건 / 거래량 <b style='color:#EF4444;'>{od['call_vol']:,}</b>건)<br>"
                             f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>풋옵션(하락) 최대 밀집:</b> 행사가 <b style='color:#3B82F6;'>${od['put_strike']:.2f}</b> (미결제약정 <b style='color:#3B82F6;'>{od['put_oi']:,}</b>건 / 거래량 <b style='color:#3B82F6;'>{od['put_vol']:,}</b>건)")
             else:
                 opt_text = "<br>▶ <b>옵션 데이터:</b> 해당 종목의 파생상품 데이터가 존재하지 않거나 제공되지 않음."
 
-            # 기술적 지표 텍스트 블록 생성
+            # [수정 완료] 매물대 텍스트 블록에 vp_color 연동 적용
             ta_text = (f"• <b>현재가:</b> <b>{p_price:.2f}</b><br>"
                        f"• <b>이동평균 타점 ({ma_label}):</b> <b style='color:{ma_color};'>{ma_val:.2f}</b> 부근<br>"
                        f"• <b>RSI (14일):</b> <b>{tech_data['rsi']:.1f}</b> {rsi_stat}<br>"
-                       f"• <b>매물대 (VP) 최대 밀집 {vp_label}:</b> <b>{vp_val:.2f}</b><br>"
+                       f"• <b>매물대 (VP) 최대 밀집 {vp_label}:</b> <b style='color:{vp_color};'>{vp_val:.2f}</b><br>"
                        f"• <b>거래량 폭발도:</b> 20일 평균 대비 <b style='color:{vol_color};'>{tech_data['vol_ratio']:.1f}%</b> ({vol_stat})<br>"
                        f"• <b>거시(S&P500) 선물 추세:</b> 최근 5일 {macro_stat}"
                        f"{opt_text}")
