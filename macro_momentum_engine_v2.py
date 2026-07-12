@@ -8,26 +8,31 @@ from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 import datetime
 import requests
+import urllib.parse # [핵심 추가] 한글 검색어를 야후 서버가 인식하도록 번역하는 모듈
 
-# --- 0. [신규] 스마트 티커 검색 및 변환 시스템 ---
+# --- 0. [수정 완료] 스마트 티커 검색 및 변환 시스템 ---
 def resolve_ticker(query):
     query = str(query).strip()
     
-    # 한국 주식 코드(6자리 숫자) 처리
+    # 1. 한국 주식 코드(6자리 숫자) 처리
     if query.isdigit() and len(query) == 6:
-        # 코스피/코스닥 판별은 생략하고 가장 확률이 높은 KOSPI(.KS) 우선 시도
         return f"{query}.KS"
         
-    # 영문 회사명 또는 한글을 검색하여 티커로 변환 (야후 파이낸스 Search API 활용)
-    if not query.isupper(): # 단순 티커(AAPL)가 아닌 회사명(apple, 삼성전자)으로 의심될 경우
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+    # 2. 한글이 포함되어 있거나 영문 소문자인 경우 야후 검색 API 가동
+    if not query.isupper() or any(ord(c) > 127 for c in query):
+        # [핵심 방어] '삼성전자' 등 한글을 서버 전용 언어로 안전하게 번역(인코딩)
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_query}"
+        
+        # [핵심 방어] 야후 서버가 봇(Bot)으로 차단하지 못하도록 최신 크롬 브라우저로 위장
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        
         try:
-            response = requests.get(url, headers=headers)
-            data = response.json()
-            if 'quotes' in data and len(data['quotes']) > 0:
-                # 검색된 첫 번째(가장 일치하는) 결과의 티커 반환
-                return data['quotes'][0]['symbol']
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if 'quotes' in data and len(data['quotes']) > 0:
+                    return data['quotes'][0]['symbol']
         except Exception:
             pass
             
@@ -51,7 +56,7 @@ def fetch_comprehensive_market_data(tickers, start_date, end_date):
     compiled_data.dropna(inplace=True)
     return compiled_data
 
-# --- 2. 동적 가중치 알고리즘 + [신규] 블랙스완 필터링 ---
+# --- 2. 동적 가중치 알고리즘 + 블랙스완 필터링 ---
 def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=3):
     if target_stock not in df.columns: return [], {}
     valid_macros = [t for t in macro_tickers if t in df.columns]
@@ -76,20 +81,16 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
     current_pattern = weighted_scaled_macro[-window_size:]
     historical_data = weighted_scaled_macro[:-window_size - 20]
     
-    # [핵심 업데이트] VIX(변동성 지수) 데이터가 있다면 블랙스완 필터링 가동
     has_vix = '^VIX' in df.columns
     vix_data = df['^VIX'].values if has_vix else None
     
     distances = []
     for i in range(len(historical_data) - window_size):
-        # 과거 특정 윈도우 기간 추출
         past_window_dates_idx = range(i, i + window_size)
-        
-        # [블랙스완 필터링] 해당 과거 구간 내에 VIX 지수가 35를 넘었던 적이 있다면(전쟁/팬데믹 등 극단적 패닉), 이 구간은 분석에서 강제 제외
         if has_vix:
             past_vix_max = np.max(vix_data[past_window_dates_idx])
             if past_vix_max > 35.0:
-                continue # 다음 탐색으로 건너뜀
+                continue 
         
         past_window = historical_data[i : i + window_size]
         distance, _ = fastdtw(current_pattern, past_window, dist=euclidean)
@@ -110,12 +111,11 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
 # --- 3. UI/UX 대시보드 ---
 st.set_page_config(page_title="옥토만경님 전용 - V3 터미널", layout="wide")
 st.title("🛡️ 옥토만경님 전용: V3 프로페셔널 퀀트 터미널")
-st.markdown("블랙스완(극단적 시장 붕괴) 구간 배제 알고리즘 및 스마트 종목 검색이 적용된 3.0 엔진입니다.")
+st.markdown("블랙스완(극단적 시장 붕괴) 구간 배제 알고리즘 및 스마트 종목 검색이 적용된 3.1 엔진입니다.")
 
 st.sidebar.header("🎛️ 제어 패널")
-raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드 (예: microsoft, 삼성전자, AAPL)", value="삼성전자")
+raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드 (예: microsoft, 삼성전자, 005930)", value="삼성전자")
 
-# [신규] 입력값을 API를 통해 정식 티커로 자동 변환
 target_stock = resolve_ticker(raw_input)
 
 st.sidebar.markdown(f"**해석된 티커:** `{target_stock}`")
@@ -195,10 +195,9 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         path_fig.add_shape(type="line", x0=window-1, y0=0, x1=window-1, y1=2, line=dict(color="black", width=2, dash="dot"))
         path_fig.add_annotation(x=window-1, y=1.5, text="현재 시점 (분기점)", showarrow=True, arrowhead=1)
         
-        # [신규] 차트 좌우 여백 제거 및 범례 하단 이동 (모바일 시인성 극대화)
         path_fig.update_layout(
-            margin=dict(l=10, r=10, t=30, b=10), # 좌우 여백 거의 없음
-            legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5), # 범례 가로배치 후 아래로 이동
+            margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5),
             xaxis_title="경과 일수", 
             yaxis_title="정규화 스케일"
         )
