@@ -190,22 +190,24 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
 # --- 3. UI/UX 대시보드 (다크 테마 유니폼 적용) ---
 st.set_page_config(page_title="AI 퀀트 터미널(옥토만경)", layout="wide", initial_sidebar_state="collapsed")
 
-# [수정 완료] 하단 리포트를 상단 제어 패널(다크 모드)과 동일하게 튜닝하는 커스텀 CSS
+# [수정 완료] 타이틀 폰트 크기 축소 및 중요 숫자 강조용 색상(황금색) CSS 추가
 st.markdown("""
 <style>
-    .report-title { font-size: 32px; font-weight: 800; color: #F9FAFB; margin-bottom: 0px; }
+    .report-title { font-size: 22px; font-weight: 800; color: #F9FAFB; margin-bottom: 0px; }
     .report-subtitle { font-size: 16px; color: #9CA3AF; margin-bottom: 30px; border-bottom: 2px solid #374151; padding-bottom: 10px; }
     .section-header { font-size: 22px; font-weight: 700; color: #F9FAFB; margin-top: 40px; margin-bottom: 15px; border-left: 4px solid #3B82F6; padding-left: 10px; }
     .metric-card { background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151; margin-bottom: 15px; color: #E5E7EB; }
     .highlight-red { color: #EF4444; font-weight: 700; }
     .highlight-blue { color: #3B82F6; font-weight: 700; }
+    .highlight-num { color: #FBBF24; font-weight: 700; }
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="report-title">🛡️ AI 퀀트 터미널 : V4.1 (옥토만경)</div>', unsafe_allow_html=True)
+st.markdown('<div class="report-title">🛡️ AI 퀀트 터미널 : V4.2 (옥토만경)</div>', unsafe_allow_html=True)
 st.markdown('<div class="report-subtitle">실시간 정량적 실전 매매 지침 및 파생(OI) 수급 추적 엔진 탑재 리포트</div>', unsafe_allow_html=True)
 
-with st.expander("🎛️ 분석 제어 패널 열기 (클릭)", expanded=True):
+# [수정 완료] 제어 패널 명칭 간소화
+with st.expander("🎛️ 분석 설정", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
         raw_input = st.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
@@ -328,18 +330,20 @@ if run_sim:
             opt_text = ""
             if tech_data.get('opt_data'):
                 od = tech_data['opt_data']
-                opt_text = (f"<br>▶ <b style='color:#F9FAFB;'>스마트머니 옵션(OI) 현황</b> (최근월물: {od['expiry']})<br>"
-                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>콜옵션(상승) 최대 밀집:</b> 행사가 <b>${od['call_strike']:.2f}</b> (미결제약정 {od['call_oi']:,}건 / 거래량 {od['call_vol']:,}건)<br>"
-                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>풋옵션(하락) 최대 밀집:</b> 행사가 <b>${od['put_strike']:.2f}</b> (미결제약정 {od['put_oi']:,}건 / 거래량 {od['put_vol']:,}건)")
+                # [수정 완료] 옵션 관련 핵심 수치에 하이라이트 색상 적용
+                opt_text = (f"<br>▶ <b style='color:#F9FAFB;'>스마트머니 옵션(OI) 현황</b> (최근월물: <span class='highlight-num'>{od['expiry']}</span>)<br>"
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>콜옵션(상승) 최대 밀집:</b> 행사가 <b class='highlight-num'>${od['call_strike']:.2f}</b> (미결제약정 <span class='highlight-num'>{od['call_oi']:,}</span>건 / 거래량 <span class='highlight-num'>{od['call_vol']:,}</span>건)<br>"
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>풋옵션(하락) 최대 밀집:</b> 행사가 <b class='highlight-num'>${od['put_strike']:.2f}</b> (미결제약정 <span class='highlight-num'>{od['put_oi']:,}</span>건 / 거래량 <span class='highlight-num'>{od['put_vol']:,}</span>건)")
             else:
                 opt_text = "<br>▶ <b>옵션 데이터:</b> 해당 종목의 파생상품 데이터가 존재하지 않거나 제공되지 않음."
 
-            ta_text = (f"• <b>현재가:</b> {p_price:.2f}<br>"
-                       f"• <b>이동평균 지지선:</b> {support_line:.2f} 부근<br>"
-                       f"• <b>RSI (14일):</b> {tech_data['rsi']:.1f} ({rsi_stat})<br>"
-                       f"• <b>매물대 (VP):</b> 최대 밀집 방어선 {tech_data['vp_support']:.2f}<br>"
-                       f"• <b>거래량 폭발도:</b> 20일 평균 대비 {tech_data['vol_ratio']:.1f}% ({vol_stat})<br>"
-                       f"• <b>거시(S&P500) 선물 추세:</b> 최근 5일 {macro_stat}"
+            # [수정 완료] 기술적 타점 핵심 수치(가격, RSI, 밀집도 등)에 하이라이트 색상 적용
+            ta_text = (f"• <b>현재가:</b> <span class='highlight-num'>{p_price:.2f}</span><br>"
+                       f"• <b>이동평균 지지선:</b> <span class='highlight-num'>{support_line:.2f}</span> 부근<br>"
+                       f"• <b>RSI (14일):</b> <span class='highlight-num'>{tech_data['rsi']:.1f}</span> ({rsi_stat})<br>"
+                       f"• <b>매물대 (VP):</b> 최대 밀집 방어선 <span class='highlight-num'>{tech_data['vp_support']:.2f}</span><br>"
+                       f"• <b>거래량 폭발도:</b> 20일 평균 대비 <span class='highlight-num'>{tech_data['vol_ratio']:.1f}%</span> ({vol_stat})<br>"
+                       f"• <b>거시(S&P500) 선물 추세:</b> 최근 5일 <span class='highlight-num'>{macro_stat}</span>"
                        f"{opt_text}")
         else:
             ta_text = "기술적 지표 데이터를 불러올 수 없습니다."
@@ -351,21 +355,22 @@ if run_sim:
         exit_signal, exit_color, exit_reason = "", "", ""
         slope_diff = curr_slope - avg_past_slope
         
+        # [수정 완료] 궤적 기울기 값(모멘텀)에도 하이라이트 적용하여 시인성 확보
         if slope_diff >= -0.05:
             exit_signal, exit_color = "매수 유지", "#EF4444"
-            exit_reason = f"현재 최근 5일 궤적({curr_slope:+.3f})이 과거 평균({avg_past_slope:+.3f})을 정상 추종 중입니다."
+            exit_reason = f"현재 최근 5일 궤적(<span class='highlight-num'>{curr_slope:+.3f}</span>)이 과거 평균(<span class='highlight-num'>{avg_past_slope:+.3f}</span>)을 정상 추종 중입니다."
         elif -0.15 <= slope_diff < -0.05:
             exit_signal, exit_color = "관망 (경고)", "#9CA3AF"
             exit_reason = f"상승 탄력이 과거 평균보다 둔화되며 하단 이탈 중입니다. 지지선 붕괴를 주의하십시오."
         else:
             exit_signal, exit_color = "매도 (이탈 확정)", "#3B82F6"
-            exit_reason = f"모멘텀({curr_slope:+.3f})이 과거 궤적({avg_past_slope:+.3f})을 하향 이탈했습니다. 시나리오 무효화, 즉각 청산하십시오."
+            exit_reason = f"모멘텀(<span class='highlight-num'>{curr_slope:+.3f}</span>)이 과거 궤적(<span class='highlight-num'>{avg_past_slope:+.3f}</span>)을 하향 이탈했습니다. 시나리오 무효화, 즉각 청산하십시오."
 
-        # [수정 완료] 메트릭 카드 텍스트 색상 다크 모드에 맞춰 조정
+        # 메트릭 카드 텍스트 렌더링 (거리 점수 수치에도 하이라이트 적용)
         st.markdown(f"""
         <div class="metric-card">
             <b style='font-size:16px; color:#F9FAFB;'>① 자금 투입 비중 (DTW 거리 기반):</b> <span style='color:#EF4444; font-size:16px;'>{alloc_level} 진입 ({alloc_ratio})</span><br>
-            <span style='color:#9CA3AF; font-size:14px;'>└ 근거: 산출된 평균 유사도 거리 점수는 {avg_dist:.2f} (15 미만 공격적, 25 이상 보수적 통제)</span>
+            <span style='color:#9CA3AF; font-size:14px;'>└ 근거: 산출된 평균 유사도 거리 점수는 <span class='highlight-num'>{avg_dist:.2f}</span> (15 미만 공격적, 25 이상 보수적 통제)</span>
         </div>
         <div class="metric-card">
             <b style='font-size:16px; color:#F9FAFB;'>② 진입 타점 정밀화 (기술적/파생 지표):</b><br>
