@@ -55,7 +55,7 @@ def fetch_comprehensive_market_data(tickers, start_date, end_date):
     compiled_data.dropna(inplace=True)
     return compiled_data
 
-# --- 2. 클린 구간 추출 및 돌발 변수 구간 완전 격리 알고리즘 ---
+# --- 2. 클린 구간 추출 알고리즘 ---
 def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=5):
     if target_stock not in df.columns: return [], {}, []
     valid_macros = [t for t in macro_tickers if t in df.columns]
@@ -125,9 +125,9 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
     return top_matches, weights, top_excluded
 
 # --- 3. UI/UX 대시보드 ---
-st.set_page_config(page_title="옥토만경님 전용 - V3.4 터미널", layout="wide")
-st.title("🛡️ 옥토만경님 전용: V3.4 프로페셔널 퀀트 터미널")
-st.markdown("가변 표본 개수 설정 및 대외 변수 격리 시스템이 실시간 구동 중입니다.")
+st.set_page_config(page_title="옥토만경님 전용 - V3.5 터미널", layout="wide")
+st.title("🛡️ 옥토만경님 전용: V3.5 프로페셔널 퀀트 터미널")
+st.markdown("최종 매매 검토 시그널(Buy/Sell) 및 실선 차트가 적용된 실전 배포 버전입니다.")
 
 st.sidebar.header("🎛️ 제어 패널")
 raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
@@ -135,10 +135,7 @@ target_stock = resolve_ticker(raw_input)
 st.sidebar.markdown(f"**해석된 티커:** `{target_stock}`")
 
 window = st.sidebar.slider("추세 분석 윈도우 (최근 N일간의 흐름)", min_value=15, max_value=90, value=45)
-
-# [수정 사항 반영] 옥토만경님의 지시대로 표본 개수를 동적으로 조절하는 핵심 마스터 슬라이더 배치
 top_n_input = st.sidebar.slider("유사 국면 매칭 개수 (N)", min_value=3, max_value=7, value=5)
-
 lookback_years = st.sidebar.slider("역사적 데이터 탐색 깊이 (년)", min_value=5, max_value=20, value=15)
 
 if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
@@ -155,7 +152,6 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
             st.error(f"⚠️ '{raw_input}' 데이터를 수신하지 못했습니다.")
             st.stop()
             
-        # 가변 설정값 top_n_input을 연산 코어에 주입
         top_matches, feature_weights, top_excluded = find_top_historical_matches(df, macro_tickers, target_stock, window_size=window, top_n=top_n_input)
         
         if top_excluded:
@@ -175,11 +171,9 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         weight_fig.update_layout(yaxis_title="가중치", height=230, margin=dict(l=0, r=0, t=20, b=0))
         st.plotly_chart(weight_fig, use_container_width=True)
         
-        # --- 🔮 2. 앙상블 패턴 매칭 및 시나리오 (N의 개수에 맞춰 유연한 그리드로 출력) ---
         st.subheader(f"🔮 2. 앙상블 패턴 매칭 및 시나리오 (보충된 클린 구간 Top {len(top_matches)})")
         returns_list = []
         
-        # 모바일 가로폭을 고려하여 최대 3열씩 끊어서 화면에 배치하는 안정화 레이아웃
         for i in range(0, len(top_matches), 3):
             chunk = top_matches[i:i+3]
             cols = st.columns(len(chunk))
@@ -198,31 +192,45 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
                     st.metric("거리(낮을수록 일치)", f"{dist_score:.2f}")
                     st.metric("이후 20일 수익률", f"{ret:.2f}%", delta=f"{ret:.2f}%")
         
-        # --- 📊 3. 종합 통계적 모멘텀 기대치 (N개의 전체 클린 데이터로 평균 산출) ---
+        # --- 📊 3. 종합 통계적 모멘텀 기대치 (시그널 및 수식 출력) ---
         st.subheader(f"📊 3. 종합 통계적 모멘텀 기대치 (정밀 보정본 - 표본 {len(top_matches)}개 종합)")
         avg_return = np.mean(returns_list)
         win_rate = sum(1 for r in returns_list if r > 0) / len(returns_list) * 100
+        
+        # [신규] 매수/매도 검토 시그널 (빨간색/파란색 적용)
+        if avg_return > 0:
+            st.markdown(f"<h3 style='color:#FF4B4B;'>매수 검토 (향후 20거래일 동안 {avg_return:.2f}% 상승 예상)</h3>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<h3 style='color:#1C83E1;'>매도 검토 (향후 20거래일 동안 {abs(avg_return):.2f}% 하락 예상)</h3>", unsafe_allow_html=True)
+            
+        # [신규] 산출 근거 및 산식 (숫자 대입)
+        st.markdown("**[기대치 산출 근거 및 수학적 공식]**")
+        returns_str = " + ".join([f"{r:.2f}" for r in returns_list])
+        st.latex(rf"\text{{앙상블 평균 예상 수익률}} = \frac{{{returns_str}}}{{{len(top_matches)}}} = {avg_return:.2f}\%")
+        st.markdown("---")
         
         c1, c2, c3 = st.columns(3)
         c1.metric("앙상블 평균 예상 수익률", f"{avg_return:.2f}%")
         c2.metric("통계적 상승 승률", f"{win_rate:.1f}%")
         c3.metric("최대 Max / Min", f"{max(returns_list):.1f}% / {min(returns_list):.1f}%")
         
-        # --- 📈 4. 예상 주가 경로 시뮬레이션 ---
+        # --- 📈 4. 예상 주가 경로 시뮬레이션 (점선 -> 실선 변경) ---
         st.subheader(f"📈 4. {target_stock}의 향후 예상 주가 경로 시뮬레이션")
         path_fig = go.Figure()
         curr_series = df[target_stock].iloc[-window:].values
         curr_norm = (curr_series - np.min(curr_series)) / (np.max(curr_series) - np.min(curr_series))
+        
+        # 현재 실제 경로 (굵은 빨간색 실선)
         path_fig.add_trace(go.Scatter(y=curr_norm, mode='lines', name='현재 실제 경로', line=dict(color='red', width=4)))
         
         for rank, (match_idx, _) in enumerate(top_matches):
             past_full_series = df[target_stock].iloc[match_idx : match_idx + window + 20].values
             past_norm = (past_full_series - np.min(past_full_series[:window])) / (np.max(past_full_series[:window]) - np.min(past_full_series[:window]))
-            path_fig.add_trace(go.Scatter(y=past_norm, mode='lines', name=f'클린 과거 {rank+1}위 시나리오', line=dict(dash='dash', width=2)))
+            
+            # [수정 완료] 과거 시나리오 경로 (dash='dash' 제거하여 '실선'으로 표출)
+            path_fig.add_trace(go.Scatter(y=past_norm, mode='lines', name=f'클린 과거 {rank+1}위 시나리오', line=dict(width=2)))
             
         path_fig.add_shape(type="line", x0=window-1, y0=0, x1=window-1, y1=2, line=dict(color="black", width=2, dash="dot"))
         path_fig.add_annotation(x=window-1, y=1.5, text="현재 시점", showarrow=True, arrowhead=1)
         path_fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5), xaxis_title="경과 일수", yaxis_title="정규화 스케일")
         st.plotly_chart(path_fig, use_container_width=True)
-        
-        st.success(f"🔒 [가변 표본 모드 완료] 옥토만경님의 설정에 따라 엄선된 {len(top_matches)}개의 순수 평시 경제학적 패턴 매칭 결과물입니다.")
