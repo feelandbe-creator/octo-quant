@@ -126,21 +126,38 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
         
     return top_matches, weights, top_excluded
 
-# --- 3. UI/UX 대시보드 ---
-st.set_page_config(page_title="옥토만경님 전용 - V3.6 AI 터미널", layout="wide")
-st.title("🛡️ 옥토만경님 전용: V3.6 인공지능 퀀트 터미널")
-st.markdown("다차원 매크로 매칭 및 5단계 실전 매매 의사결정 엔진이 탑재되었습니다.")
+# --- 3. UI/UX 대시보드 (레이아웃 통합 및 드롭다운 적용) ---
+st.set_page_config(page_title="AI 퀀트 터미널(옥토만경)", layout="wide")
 
-st.sidebar.header("🎛️ 제어 패널")
-raw_input = st.sidebar.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
-target_stock = resolve_ticker(raw_input)
-st.sidebar.markdown(f"**해석된 티커:** `{target_stock}`")
+# [수정] 메인 타이틀 크기를 st.title에서 st.header(제어패널 수준)로 축소 및 명칭 변경
+st.header("🛡️ AI 퀀트 터미널 : V3.7(옥토만경)")
+st.markdown("다차원 매크로 매칭 및 5단계 실전 매매 의사결정 엔진 탑재")
 
-window = st.sidebar.slider("추세 분석 윈도우 (최근 N일간의 흐름)", min_value=15, max_value=90, value=45)
-top_n_input = st.sidebar.slider("유사 국면 매칭 개수 (N)", min_value=3, max_value=7, value=5)
-lookback_years = st.sidebar.slider("역사적 데이터 탐색 깊이 (년)", min_value=5, max_value=20, value=15)
+st.markdown("---")
 
-if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
+# [수정] 사이드바(st.sidebar)를 완전히 제거하고 메인 화면으로 패널 통합
+st.subheader("🎛️ 제어 패널")
+
+# 화면을 두 개의 열(Column)로 나누어 깔끔하게 배치
+col1, col2 = st.columns(2)
+
+with col1:
+    raw_input = st.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
+    target_stock = resolve_ticker(raw_input)
+    st.caption(f"**해석된 티커:** `{target_stock}`")
+    
+    # [수정] 슬라이더를 드롭다운(selectbox)으로 변경하고 의미 있는 단위 제공
+    window = st.selectbox("추세 분석 윈도우 (최근 N일간의 흐름)", options=[15, 30, 45, 60, 90], index=2) # 기본값 45
+
+with col2:
+    # [수정] 슬라이더를 드롭다운(selectbox)으로 변경
+    top_n_input = st.selectbox("유사 국면 매칭 개수 (N)", options=[3, 4, 5, 6, 7], index=2) # 기본값 5
+    lookback_years = st.selectbox("역사적 데이터 탐색 깊이 (년)", options=[5, 8, 10, 12, 15, 20], index=4) # 기본값 15
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# [수정] 버튼 텍스트 변경
+if st.button("⚙️ 시뮬레이션 시작", use_container_width=True):
     with st.spinner(f"'{raw_input}' 데이터 연산 및 인공지능 매매 판독 중..."):
         
         end_date = datetime.date.today()
@@ -161,6 +178,8 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
         top_matches, feature_weights, top_excluded = find_top_historical_matches(
             df, macro_tickers, target_stock, window_size=window, top_n=top_n_input
         )
+        
+        st.markdown("---")
         
         if top_excluded:
             st.subheader("🚫 대외 돌발 변수 격리 안내")
@@ -318,7 +337,6 @@ if st.sidebar.button("⚙️ 고정밀 시뮬레이션 개시"):
             arrowhead=1
         )
         
-        # [수정 완료] 가장 길었던 코드를 안전하게 쪼개어 배치 (에러의 원인 해결)
         path_fig.update_layout(
             margin=dict(l=10, r=10, t=30, b=10), 
             legend=dict(
