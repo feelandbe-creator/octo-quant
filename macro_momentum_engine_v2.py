@@ -293,7 +293,7 @@ if run_sim:
             signal_text, signal_color = f"매도 고려 (향후 20일 {abs(avg_return):.2f}% 하락 예상)", "#3B82F6"
             reasoning = "낮은 승률과 평균치 하락이 예상되므로 비중 축소가 권장됩니다."
         else: 
-            signal_text, signal_color = f"적극 매도 (향후 20일 {abs(avg_return):.2f}% 하락 예상)", "#2563EB"
+            signal_text, signal_color = f"적극 매도 (향후 20일 {abs(avg_return):.2f}% 하락 예상)", "#3B82F6"
             reasoning = "강력한 하방 압력 및 바닥권 승률이 겹친 구간이므로 즉각적인 포지션 정리가 필요합니다."
 
         st.markdown(f"""
@@ -303,11 +303,32 @@ if run_sim:
         </div>
         """, unsafe_allow_html=True)
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("통계적 상승 승률", f"{win_rate:.1f}%")
-        c2.metric("앙상블 평균 수익률", f"{avg_return:.2f}%")
-        c3.metric("최대 상승 (Max)", f"{max_ret:.1f}%")
-        c4.metric("최대 하락 (Min)", f"{min_ret:.1f}%")
+        # [수정 완료] st.columns(4) 대신 맞춤형 HTML을 사용하여 조건부 컬러링 정밀 적용
+        win_rate_color = "#EF4444" if win_rate > 50 else "#3B82F6"
+        avg_ret_color = "#EF4444" if avg_return > 0 else "#3B82F6"
+        max_ret_color = "#EF4444"
+        min_ret_color = "#3B82F6"
+        
+        st.markdown(f"""
+        <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+                <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">통계적 상승 승률</div>
+                <div style="color: {win_rate_color}; font-size: 28px; font-weight: 700;">{win_rate:.1f}%</div>
+            </div>
+            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+                <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">앙상블 평균 수익률</div>
+                <div style="color: {avg_ret_color}; font-size: 28px; font-weight: 700;">{avg_return:+.2f}%</div>
+            </div>
+            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+                <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">최대 상승 (Max)</div>
+                <div style="color: {max_ret_color}; font-size: 28px; font-weight: 700;">{max_ret:+.1f}%</div>
+            </div>
+            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151;">
+                <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">최대 하락 (Min)</div>
+                <div style="color: {min_ret_color}; font-size: 28px; font-weight: 700;">{min_ret:+.1f}%</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("#### 📌 정량적 매매 액션 플랜")
         
@@ -324,41 +345,51 @@ if run_sim:
         if tech_data:
             p_price = tech_data['price']
             
-            # [수정 완료] 현재가에 따른 이동평균선 지지/저항 동적 판별 및 괄호 명시
+            # [수정 완료] 20일선 지지/저항 분기 및 색상 동적 렌더링
             if p_price >= tech_data['sma20']:
                 ma_val = tech_data['sma20']
                 ma_label = "20일선 지지"
-            elif p_price >= tech_data['sma50']:
-                ma_val = tech_data['sma50']
-                ma_label = "50일선 지지"
+                ma_color = "#EF4444"
             else:
                 ma_val = tech_data['sma20']
                 ma_label = "20일선 저항"
+                ma_color = "#3B82F6"
                 
-            rsi_stat = "과매도(매수 유리)" if tech_data['rsi'] < 40 else "과매수(조정 주의)" if tech_data['rsi'] > 60 else "중립"
-            vol_stat = "기관 수급 유입" if tech_data['vol_ratio'] > 150 else "평이한 거래량"
+            # [수정 완료] RSI 과대매도(빨강)/과대매수(파랑) 적용
+            if tech_data['rsi'] < 40:
+                rsi_stat = "과매도(<span style='color:#EF4444; font-weight:700;'>매수 유리</span>)"
+            elif tech_data['rsi'] > 60:
+                rsi_stat = "과매수(<span style='color:#3B82F6; font-weight:700;'>매도 유리</span>)"
+            else:
+                rsi_stat = "중립"
             
+            # [수정 완료] 거래량 폭발도 100% 기준 상승(빨강)/하락(파랑) 지표 분리
+            vol_color = "#EF4444" if tech_data['vol_ratio'] >= 100 else "#3B82F6"
+            vol_stat = "상승 지표" if tech_data['vol_ratio'] >= 100 else "하락 지표"
+            
+            # [수정 완료] 거시 선물 추세 상승(빨강)/하락(파랑)
             macro_trend = df['^GSPC'].iloc[-1] - df['^GSPC'].iloc[-5]
             macro_stat = "<span style='color:#EF4444; font-weight:700;'>상승 추세</span>" if macro_trend > 0 else "<span style='color:#3B82F6; font-weight:700;'>하락 추세</span>"
             
-            # [수정 완료] 매물대(VP) 지지/저항 동적 판별
             vp_val = tech_data['vp_support']
             vp_label = "지지선" if p_price >= vp_val else "저항선"
             
             opt_text = ""
             if tech_data.get('opt_data'):
                 od = tech_data['opt_data']
+                # [수정 완료] 콜옵션(빨강)과 풋옵션(파랑)의 핵심 수치 색상 분리
                 opt_text = (f"<br>▶ <b style='color:#F9FAFB;'>스마트머니 옵션(OI) 현황</b> (최근월물: <b>{od['expiry']}</b>)<br>"
-                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>콜옵션(상승) 최대 밀집:</b> 행사가 <b>${od['call_strike']:.2f}</b> (미결제약정 <b>{od['call_oi']:,}</b>건 / 거래량 <b>{od['call_vol']:,}</b>건)<br>"
-                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>풋옵션(하락) 최대 밀집:</b> 행사가 <b>${od['put_strike']:.2f}</b> (미결제약정 <b>{od['put_oi']:,}</b>건 / 거래량 <b>{od['put_vol']:,}</b>건)")
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>콜옵션(상승) 최대 밀집:</b> 행사가 <b style='color:#EF4444;'>${od['call_strike']:.2f}</b> (미결제약정 <b style='color:#EF4444;'>{od['call_oi']:,}</b>건 / 거래량 <b style='color:#EF4444;'>{od['call_vol']:,}</b>건)<br>"
+                            f"&nbsp;&nbsp;&nbsp;&nbsp;• <b>풋옵션(하락) 최대 밀집:</b> 행사가 <b style='color:#3B82F6;'>${od['put_strike']:.2f}</b> (미결제약정 <b style='color:#3B82F6;'>{od['put_oi']:,}</b>건 / 거래량 <b style='color:#3B82F6;'>{od['put_vol']:,}</b>건)")
             else:
                 opt_text = "<br>▶ <b>옵션 데이터:</b> 해당 종목의 파생상품 데이터가 존재하지 않거나 제공되지 않음."
 
+            # 기술적 지표 텍스트 블록 생성
             ta_text = (f"• <b>현재가:</b> <b>{p_price:.2f}</b><br>"
-                       f"• <b>이동평균 타점 ({ma_label}):</b> <b>{ma_val:.2f}</b> 부근<br>"
-                       f"• <b>RSI (14일):</b> <b>{tech_data['rsi']:.1f}</b> ({rsi_stat})<br>"
+                       f"• <b>이동평균 타점 ({ma_label}):</b> <b style='color:{ma_color};'>{ma_val:.2f}</b> 부근<br>"
+                       f"• <b>RSI (14일):</b> <b>{tech_data['rsi']:.1f}</b> {rsi_stat}<br>"
                        f"• <b>매물대 (VP) 최대 밀집 {vp_label}:</b> <b>{vp_val:.2f}</b><br>"
-                       f"• <b>거래량 폭발도:</b> 20일 평균 대비 <b>{tech_data['vol_ratio']:.1f}%</b> ({vol_stat})<br>"
+                       f"• <b>거래량 폭발도:</b> 20일 평균 대비 <b style='color:{vol_color};'>{tech_data['vol_ratio']:.1f}%</b> ({vol_stat})<br>"
                        f"• <b>거시(S&P500) 선물 추세:</b> 최근 5일 {macro_stat}"
                        f"{opt_text}")
         else:
@@ -371,10 +402,10 @@ if run_sim:
         exit_signal, exit_color, exit_reason = "", "", ""
         slope_diff = curr_slope - avg_past_slope
         
-        # [수정 완료] 궤적 기울기 값(상승/하락)에 빨간색/파란색 동적 부여
         curr_slope_str = fmt_trend_color(curr_slope)
         avg_past_slope_str = fmt_trend_color(avg_past_slope)
         
+        # [수정 완료] 궤적 추적 청산 시그널: 매수(빨강), 관망(회색), 매도(파랑)
         if slope_diff >= -0.05:
             exit_signal, exit_color = "매수 유지", "#EF4444"
             exit_reason = f"현재 최근 5일 궤적({curr_slope_str})이 과거 평균({avg_past_slope_str})을 정상 추종 중입니다."
@@ -395,11 +426,10 @@ if run_sim:
             <span style='font-size:14.5px; line-height: 1.6; color:#D1D5DB;'>{ta_text}</span>
         </div>
         <div class="metric-card">
-            <b style='font-size:16px; color:#F9FAFB;'>③ 궤적 추적 청산 전략:</b> <span style='color:{exit_color}; font-size:16px;'>{exit_signal}</span><br>
+            <b style='font-size:16px; color:#F9FAFB;'>③ 궤적 추적 청산 전략:</b> <span style='color:{exit_color}; font-size:16px; font-weight:700;'>{exit_signal}</span><br>
             <span style='color:#9CA3AF; font-size:14px;'>└ 근거: {exit_reason}</span>
         </div>
         """, unsafe_allow_html=True)
-
 
         st.markdown('<div class="section-header">📈 2. 궤적 추적 시뮬레이션 차트</div>', unsafe_allow_html=True)
         path_fig = go.Figure()
