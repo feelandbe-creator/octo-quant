@@ -45,8 +45,9 @@ def fetch_comprehensive_market_data(tickers, start_date, end_date):
         try:
             raw_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
             if raw_data.empty: continue
-            if 'Adj Close' in raw_data.columns: price_series = raw_data['Adj Close']
-            elif 'Close' in raw_data.columns: price_series = raw_data['Close']
+            # [핵심 패치 1] yfinance의 2차원(2D) 표 데이터를 1차원(1D) 선으로 강제 압축(.squeeze())
+            if 'Adj Close' in raw_data.columns: price_series = raw_data['Adj Close'].squeeze()
+            elif 'Close' in raw_data.columns: price_series = raw_data['Close'].squeeze()
             else: continue
             compiled_data[ticker] = price_series
         except Exception:
@@ -65,33 +66,36 @@ def fetch_technical_indicators(ticker):
         df = yf.download(ticker, start=start, end=end, progress=False)
         if df.empty: return None
         
-        close = df['Close'] if 'Close' in df.columns else df['Adj Close']
-        vol = df['Volume']
+        # [핵심 패치 2] 연산 오류를 방지하기 위해 가격과 거래량 데이터를 1D 시리즈로 압축
+        close = df['Close'].squeeze() if 'Close' in df.columns else df['Adj Close'].squeeze()
+        vol = df['Volume'].squeeze() if 'Volume' in df.columns else pd.Series(0, index=close.index)
         
-        # 1. 이동평균선 (SMA 20, SMA 50)
-        sma20 = close.rolling(window=20).mean().iloc[-1]
-        sma50 = close.rolling(window=50).mean().iloc[-1]
+        # 1. 이동평균선 (SMA 20, SMA 50) - 실수형(float)으로 명시적 변환
+        sma20 = float(close.rolling(window=20).mean().iloc[-1])
+        sma50 = float(close.rolling(window=50).mean().iloc[-1])
         
         # 2. RSI (14일)
         delta = close.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
-        rsi14 = 100 - (100 / (1 + rs)).iloc[-1]
+        rsi14 = float(100 - (100 / (1 + rs)).iloc[-1])
         
         # 3. 매물대 (Volume Profile - 최근 45일 기준 최대 거래량 밀집 구간)
-        recent_45_df = df.iloc[-45:]
-        bins = pd.cut(recent_45_df['Close' if 'Close' in df.columns else 'Adj Close'], bins=10)
-        vp = recent_45_df.groupby(bins)['Volume'].sum()
+        recent_45_close = close.iloc[-45:]
+        recent_45_vol = vol.iloc[-45:]
+        bins = pd.cut(recent_45_close, bins=10)
+        # observed=False는 Pandas 최신 문법 경고 방어용
+        vp = recent_45_vol.groupby(bins, observed=False).sum() 
         max_vol_bin = vp.idxmax()
-        vp_support = max_vol_bin.mid
+        vp_support = float(max_vol_bin.mid)
         
         # 4. 수급(OI 프록시) - 최근 5일 평균 거래량 vs 20일 평균 거래량 비율
-        vol_5 = vol.rolling(window=5).mean().iloc[-1]
-        vol_20 = vol.rolling(window=20).mean().iloc[-1]
-        vol_ratio = (vol_5 / vol_20) * 100 if vol_20 > 0 else 100
+        vol_5 = float(vol.rolling(window=5).mean().iloc[-1])
+        vol_20 = float(vol.rolling(window=20).mean().iloc[-1])
+        vol_ratio = float((vol_5 / vol_20) * 100) if vol_20 > 0 else 100.0
         
-        current_price = close.iloc[-1]
+        current_price = float(close.iloc[-1])
         
         return {
             'price': current_price, 'sma20': sma20, 'sma50': sma50, 
