@@ -410,15 +410,19 @@ if run_sim:
         curr_slope_str = fmt_trend_color(curr_slope)
         avg_past_slope_str = fmt_trend_color(avg_past_slope)
         
-        if slope_diff >= -0.05:
-            exit_signal, exit_color = "매수 유지", "#EF4444"
-            exit_reason = f"현재 최근 5일 궤적({curr_slope_str})이 과거 평균({avg_past_slope_str})을 정상 추종 중입니다."
+        # [수정 완료] 궤적 추적 모멘텀 강도에 따른 4단계 단기 전술(Tactics) 및 옥토만경님 코멘트 주입
+        if slope_diff >= 0.05:
+            exit_signal, exit_color = "공격적 매수", "#EF4444" # 빨강
+            exit_reason = f"상승 탄력({curr_slope_str})이 과거 평균({avg_past_slope_str})을 강하게 상회하며 폭발 중입니다. 저항선 돌파가 확인되면 추격 매수를 통해 단기 수익을 극대화하는 <b>'공격적 매수'</b> 전술이 유효합니다."
+        elif -0.05 <= slope_diff < 0.05:
+            exit_signal, exit_color = "점진적 매수", "#EF4444" # 빨강
+            exit_reason = f"현재 궤적({curr_slope_str})이 과거 평균({avg_past_slope_str})을 안정적으로 추종하고 있습니다. 주요 지지선 부근에서 단기 조정이 올 때마다 물량을 모아가는 <b>'점진적 매수'</b> 전술을 권장합니다."
         elif -0.15 <= slope_diff < -0.05:
-            exit_signal, exit_color = "관망 (경고)", "#9CA3AF"
-            exit_reason = f"상승 탄력이 과거 평균보다 둔화되며 하단 이탈 중입니다. 지지선 붕괴를 주의하십시오."
+            exit_signal, exit_color = "관망 (점진적 매도)", "#9CA3AF" # 회색
+            exit_reason = f"상승 탄력이 과거 궤적보다 둔화되며 하단 이탈 중입니다. 지지선 붕괴를 주의하십시오. 아직 탈출 기회가 남아있을 수 있으니, 장중 반등이 올 때마다 비중을 축소하면서 <b>'질서 있는 후퇴(점진적 매도)'</b> 전술을 취해야 합니다."
         else:
-            exit_signal, exit_color = "매도 (이탈 확정)", "#3B82F6"
-            exit_reason = f"모멘텀({curr_slope_str})이 과거 궤적({avg_past_slope_str})을 하향 이탈했습니다. 시나리오 무효화, 즉각 청산하십시오."
+            exit_signal, exit_color = "공격적 매도", "#3B82F6" # 파랑
+            exit_reason = f"모멘텀({curr_slope_str})이 과거 궤적({avg_past_slope_str})을 하향 이탈 확정했습니다. 과거의 상승 시나리오가 완전히 무효화되었으므로, 즉각적인 투매로 하방 리스크를 차단하는 <b>'공격적 매도'</b> 전술을 집행하십시오."
 
         st.markdown(f"""
         <div class="metric-card">
@@ -430,8 +434,8 @@ if run_sim:
             <span style='font-size:14.5px; line-height: 1.6; color:#D1D5DB;'>{ta_text}</span>
         </div>
         <div class="metric-card">
-            <b style='font-size:16px; color:#F9FAFB;'>③ 궤적 추적 청산 전략:</b> <span style='color:{exit_color}; font-size:16px; font-weight:700;'>{exit_signal}</span><br>
-            <span style='color:#9CA3AF; font-size:14px;'>└ 근거: {exit_reason}</span>
+            <b style='font-size:16px; color:#F9FAFB;'>③ 궤적 추적 단기 전술:</b> <span style='color:{exit_color}; font-size:16px; font-weight:700;'>{exit_signal}</span><br>
+            <span style='color:#9CA3AF; font-size:14.5px; line-height: 1.6;'>└ <b>[실전 가이드]</b> {exit_reason}</span>
         </div>
         """, unsafe_allow_html=True)
 
