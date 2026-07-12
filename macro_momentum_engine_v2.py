@@ -417,53 +417,53 @@ if run_sim:
             exit_reason = f"모멘텀({curr_slope_str})이 과거 궤적({avg_past_slope_str})을 하향 이탈했습니다. 시나리오 무효화, 즉각 청산하십시오."
 
         st.markdown(f"""
-        <div class="metric-card">
-            <b style='font-size:16px; color:#F9FAFB;'>① 자금 투입 비중 (DTW 거리 기반):</b> <span style='color:#EF4444; font-size:16px;'>{alloc_level} 진입 ({alloc_ratio})</span><br>
-            <span style='color:#9CA3AF; font-size:14px;'>└ 근거: 산출된 평균 유사도 거리 점수는 <b>{avg_dist:.2f}</b> (15 미만 공격적, 25 이상 보수적 통제)</span>
+        <div style='border-left: 5px solid {signal_color}; background-color: rgba(255,255,255,0.05); padding: 20px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #374151;'>
+            <h3 style='margin-top:0px; color: {signal_color}; font-size: 24px;'>{signal_text}</h3>
+            <p style='margin-bottom:0px; font-size: 15px; color: #D1D5DB;'><strong>[전략 근거]</strong> {reasoning}</p>
         </div>
-        <div class="metric-card">
-            <b style='font-size:16px; color:#F9FAFB;'>② 진입 타점 정밀화 (기술적/파생 지표):</b><br>
-            <span style='font-size:14.5px; line-height: 1.6; color:#D1D5DB;'>{ta_text}</span>
-        </div>
-        <div class="metric-card">
-            <b style='font-size:16px; color:#F9FAFB;'>③ 궤적 추적 청산 전략:</b> <span style='color:{exit_color}; font-size:16px; font-weight:700;'>{exit_signal}</span><br>
-            <span style='color:#9CA3AF; font-size:14px;'>└ 근거: {exit_reason}</span>
+        """, unsafe_allow_html=True)
+        
+        win_rate_color = "#EF4444" if win_rate >= 50 else "#3B82F6"
+        avg_ret_color = "#EF4444" if avg_return > 0 else "#3B82F6"
+        max_ret_color = "#EF4444"
+        min_ret_color = "#3B82F6"
+        
+        # [수정 완료] 명칭 변경(기간 평균 수익률) 및 정중앙 '20일' 원형 뱃지(Absolute Position) 추가
+        st.markdown(f"""
+        <div style="position: relative; margin-bottom: 20px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">통계적 상승 승률</div>
+                    <div style="color: {win_rate_color}; font-size: 28px; font-weight: 700;">{win_rate:.1f}%</div>
+                </div>
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">기간 평균 수익률</div>
+                    <div style="color: {avg_ret_color}; font-size: 28px; font-weight: 700;">{avg_return:+.2f}%</div>
+                </div>
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">최대 상승 (Max)</div>
+                    <div style="color: {max_ret_color}; font-size: 28px; font-weight: 700;">{max_ret:+.1f}%</div>
+                </div>
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">최대 하락 (Min)</div>
+                    <div style="color: {min_ret_color}; font-size: 28px; font-weight: 700;">{min_ret:+.1f}%</div>
+                </div>
+            </div>
+            <!-- 정중앙 20일 원형 뱃지 -->
+            <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                        width: 70px; height: 70px; background-color: #1F2937; border: 3px solid #374151; 
+                        border-radius: 50%; display: flex; align-items: center; justify-content: center; 
+                        color: #F9FAFB; font-weight: 800; font-size: 16px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); 
+                        z-index: 10;">
+                20일
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="section-header">📈 2. 궤적 추적 시뮬레이션 차트</div>', unsafe_allow_html=True)
-        path_fig = go.Figure()
+        st.markdown("#### 📌 정량적 매매 액션 플랜")
         
-        path_fig.add_trace(go.Scatter(y=curr_norm, mode='lines', name='현재 실제 경로', line=dict(color='#EF4444', width=4)))
-        
-        for rank, (match_idx, _) in enumerate(top_matches):
-            past_full = df[target_stock].iloc[match_idx : match_idx + window + 20].values
-            past_norm = (past_full - np.min(past_full[:window])) / (np.max(past_full[:window]) - np.min(past_full[:window]))
-            path_fig.add_trace(go.Scatter(y=past_norm, mode='lines', name=f'과거 {rank+1}위 시나리오', line=dict(width=2, color=f'rgba(59, 130, 246, {1.0 - rank*0.15})')))
-            
-        path_fig.add_shape(
-            type="line", x0=window-1, x1=window-1, 
-            y0=0, y1=1, xref='x', yref='paper', 
-            line=dict(color="#9CA3AF", width=2, dash="dot")
-        )
-        
-        path_fig.add_annotation(
-            x=window-1, y=1, xref='x', yref='paper', 
-            text="현재 시점 (미래 프로젝션 분기점)", 
-            showarrow=True, arrowhead=1, ax=50, ay=0,
-            font=dict(size=13, color="#F9FAFB"),
-            bgcolor="#1F2937", bordercolor="#4B5563", borderpad=4
-        )
-        
-        path_fig.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=30, b=10), 
-            legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5, font=dict(color="#D1D5DB")), 
-            xaxis=dict(title="경과 일수", showgrid=True, gridcolor='#374151', title_font=dict(color="#9CA3AF"), tickfont=dict(color="#9CA3AF")), 
-            yaxis=dict(title="정규화 스케일", showgrid=True, gridcolor='#374151', title_font=dict(color="#9CA3AF"), tickfont=dict(color="#9CA3AF"))
-        )
-        st.plotly_chart(path_fig, use_container_width=True)
+        def fmt_trend_color(val):
+            return f"<span style='color:#EF4444; font-weight:700;'>{val:+.3f}</span>" if val > 0 else f"<span style='color:#3B82F6; font-weight:700;'>{val:+.3f}</span>"
 
 
         st.markdown('<div class="section-header">🔍 3. 기초 데이터 및 가중치 분석</div>', unsafe_allow_html=True)
