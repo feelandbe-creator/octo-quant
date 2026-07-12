@@ -27,9 +27,7 @@ def resolve_ticker(query):
     if not query.isupper() or any(ord(c) > 127 for c in query):
         encoded_query = urllib.parse.quote(query)
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={encoded_query}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         try:
             response = requests.get(url, headers=headers, timeout=5)
             if response.status_code == 200:
@@ -56,6 +54,51 @@ def fetch_comprehensive_market_data(tickers, start_date, end_date):
     compiled_data.ffill(inplace=True)
     compiled_data.dropna(inplace=True)
     return compiled_data
+
+# [신규 추가] 정밀 타점 계산을 위한 개별 종목 기술적 데이터 스크래핑 엔진
+@st.cache_data(show_spinner=False)
+def fetch_technical_indicators(ticker):
+    try:
+        # 최근 100일의 OHLCV 데이터 확보
+        end = datetime.date.today()
+        start = end - datetime.timedelta(days=100)
+        df = yf.download(ticker, start=start, end=end, progress=False)
+        if df.empty: return None
+        
+        close = df['Close'] if 'Close' in df.columns else df['Adj Close']
+        vol = df['Volume']
+        
+        # 1. 이동평균선 (SMA 20, SMA 50)
+        sma20 = close.rolling(window=20).mean().iloc[-1]
+        sma50 = close.rolling(window=50).mean().iloc[-1]
+        
+        # 2. RSI (14일)
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi14 = 100 - (100 / (1 + rs)).iloc[-1]
+        
+        # 3. 매물대 (Volume Profile - 최근 45일 기준 최대 거래량 밀집 구간)
+        recent_45_df = df.iloc[-45:]
+        bins = pd.cut(recent_45_df['Close' if 'Close' in df.columns else 'Adj Close'], bins=10)
+        vp = recent_45_df.groupby(bins)['Volume'].sum()
+        max_vol_bin = vp.idxmax()
+        vp_support = max_vol_bin.mid
+        
+        # 4. 수급(OI 프록시) - 최근 5일 평균 거래량 vs 20일 평균 거래량 비율
+        vol_5 = vol.rolling(window=5).mean().iloc[-1]
+        vol_20 = vol.rolling(window=20).mean().iloc[-1]
+        vol_ratio = (vol_5 / vol_20) * 100 if vol_20 > 0 else 100
+        
+        current_price = close.iloc[-1]
+        
+        return {
+            'price': current_price, 'sma20': sma20, 'sma50': sma50, 
+            'rsi': rsi14, 'vp_support': vp_support, 'vol_ratio': vol_ratio
+        }
+    except Exception:
+        return None
 
 # --- 2. 클린 구간 추출 알고리즘 ---
 def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=5):
@@ -126,58 +169,42 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
         
     return top_matches, weights, top_excluded
 
-# --- 3. UI/UX 대시보드 (레이아웃 통합 및 드롭다운 적용) ---
+# --- 3. UI/UX 대시보드 ---
 st.set_page_config(page_title="AI 퀀트 터미널(옥토만경)", layout="wide")
-
-# [수정] 메인 타이틀 크기를 st.title에서 st.header(제어패널 수준)로 축소 및 명칭 변경
-st.header("🛡️ AI 퀀트 터미널 : V3.7(옥토만경)")
-st.markdown("다차원 매크로 매칭 및 5단계 실전 매매 의사결정 엔진 탑재")
-
+st.header("🛡️ AI 퀀트 터미널 : V3.8(옥토만경)")
+st.markdown("정량화된 실전 매매 지침 및 궤적 추적 엔진 탑재")
 st.markdown("---")
-
-# [수정] 사이드바(st.sidebar)를 완전히 제거하고 메인 화면으로 패널 통합
 st.subheader("🎛️ 제어 패널")
 
-# 화면을 두 개의 열(Column)로 나누어 깔끔하게 배치
 col1, col2 = st.columns(2)
-
 with col1:
     raw_input = st.text_input("종목명, 티커, 또는 한국 주식코드", value="JOBY")
     target_stock = resolve_ticker(raw_input)
     st.caption(f"**해석된 티커:** `{target_stock}`")
-    
-    # [수정] 슬라이더를 드롭다운(selectbox)으로 변경하고 의미 있는 단위 제공
-    window = st.selectbox("추세 분석 윈도우 (최근 N일간의 흐름)", options=[15, 30, 45, 60, 90], index=2) # 기본값 45
-
+    window = st.selectbox("추세 분석 윈도우 (최근 N일간의 흐름)", options=[15, 30, 45, 60, 90], index=2) 
 with col2:
-    # [수정] 슬라이더를 드롭다운(selectbox)으로 변경
-    top_n_input = st.selectbox("유사 국면 매칭 개수 (N)", options=[3, 4, 5, 6, 7], index=2) # 기본값 5
-    lookback_years = st.selectbox("역사적 데이터 탐색 깊이 (년)", options=[5, 8, 10, 12, 15, 20], index=4) # 기본값 15
+    top_n_input = st.selectbox("유사 국면 매칭 개수 (N)", options=[3, 4, 5, 6, 7], index=2) 
+    lookback_years = st.selectbox("역사적 데이터 탐색 깊이 (년)", options=[5, 8, 10, 12, 15, 20], index=4) 
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# [수정] 버튼 텍스트 변경
 if st.button("⚙️ 시뮬레이션 시작", use_container_width=True):
-    with st.spinner(f"'{raw_input}' 데이터 연산 및 인공지능 매매 판독 중..."):
+    with st.spinner(f"'{raw_input}' 데이터 연산 및 AI 실전 매매 판독 중..."):
         
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=365 * lookback_years)
+        # ^GSPC(S&P500)는 거시 선물 추이 프록시로 사용됨
         macro_tickers = ['QQQ', '^GSPC', 'DIA', '^TNX', 'DX=F', '^VIX', 'CL=F']
         all_tickers = list(set(macro_tickers + [target_stock]))
         
-        df = fetch_comprehensive_market_data(
-            all_tickers, 
-            start_date.strftime("%Y-%m-%d"), 
-            end_date.strftime("%Y-%m-%d")
-        )
+        df = fetch_comprehensive_market_data(all_tickers, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+        tech_data = fetch_technical_indicators(target_stock)
         
         if target_stock not in df.columns:
             st.error(f"⚠️ '{raw_input}' 데이터를 수신하지 못했습니다.")
             st.stop()
             
-        top_matches, feature_weights, top_excluded = find_top_historical_matches(
-            df, macro_tickers, target_stock, window_size=window, top_n=top_n_input
-        )
+        top_matches, feature_weights, top_excluded = find_top_historical_matches(df, macro_tickers, target_stock, window_size=window, top_n=top_n_input)
         
         st.markdown("---")
         
@@ -194,21 +221,14 @@ if st.button("⚙️ 시뮬레이션 시작", use_container_width=True):
             st.stop()
             
         st.subheader("🎯 1. 현재 시장 지배 지표 분석")
-        weight_fig = go.Figure([go.Bar(
-            x=list(feature_weights.keys()), 
-            y=list(feature_weights.values()), 
-            marker_color='rgb(26, 54, 93)'
-        )])
-        weight_fig.update_layout(
-            yaxis_title="가중치", 
-            height=230, 
-            margin=dict(l=0, r=0, t=20, b=0)
-        )
+        weight_fig = go.Figure([go.Bar(x=list(feature_weights.keys()), y=list(feature_weights.values()), marker_color='rgb(26, 54, 93)')])
+        weight_fig.update_layout(yaxis_title="가중치", height=230, margin=dict(l=0, r=0, t=20, b=0))
         st.plotly_chart(weight_fig, use_container_width=True)
         
         st.subheader(f"🔮 2. 앙상블 패턴 매칭 및 시나리오 (보충된 클린 구간 Top {len(top_matches)})")
         returns_list = []
         distances_list = []
+        past_slopes = [] # 궤적 이탈 추적용 (과거 시나리오의 마지막 5일 기울기)
         
         for i in range(0, len(top_matches), 3):
             chunk = top_matches[i:i+3]
@@ -223,13 +243,18 @@ if st.button("⚙️ 시뮬레이션 시작", use_container_width=True):
                 returns_list.append(ret)
                 distances_list.append(dist_score)
                 
+                # 궤적 연산 (정규화)
+                past_full_series = df[target_stock].iloc[match_idx : match_idx + window + 20].values
+                past_norm = (past_full_series - np.min(past_full_series[:window])) / (np.max(past_full_series[:window]) - np.min(past_full_series[:window]))
+                past_slopes.append(past_norm[window-1] - past_norm[window-5]) # 과거 5일간의 모멘텀 기울기
+                
                 with cols[rank]:
                     st.info(f"**[클린 상위 {actual_rank}위]**")
                     st.write(f"📅 {m_start} ~ {m_end}")
-                    st.metric("거리(낮을수록 일치)", f"{dist_score:.2f}")
+                    st.metric("거리", f"{dist_score:.2f}")
                     st.metric("이후 20일 수익률", f"{ret:.2f}%", delta=f"{ret:.2f}%")
         
-        # --- 📊 3. 종합 통계적 모멘텀 기대치 및 AI 매매 시그널 판독 ---
+        # --- 📊 3. 종합 통계적 모멘텀 기대치 및 실전 매매 행동 지침 ---
         st.subheader("📊 3. 종합 통계적 모멘텀 기대치 및 실전 매매 지침")
         avg_return = np.mean(returns_list)
         win_rate = sum(1 for r in returns_list if r > 0) / len(returns_list) * 100
@@ -237,117 +262,118 @@ if st.button("⚙️ 시뮬레이션 시작", use_container_width=True):
         min_ret = min(returns_list)
         avg_dist = np.mean(distances_list)
         
+        # 3-1. 종합 기대치 시그널
+        signal_text, signal_color, reasoning = "", "", ""
         risk_reward_ratio = max_ret / abs(min_ret) if min_ret < 0 else float('inf')
         
-        signal_text = ""
-        signal_color = ""
-        reasoning = ""
-        
         if win_rate == 100 and avg_return >= 5.0:
-            signal_text = f"적극 매수 (향후 20거래일 동안 {avg_return:.2f}% 상승 예상)"
-            signal_color = "#FF2A2A" 
-            reasoning = f"과거 {len(top_matches)}번의 유사 국면에서 단 한 번의 예외도 없이 모두 상승(승률 100%)했으며, 예상 수익률이 +5% 이상인 **[최상의 A급 진입 찬스]**입니다. 포트폴리오 내 투자 비중을 과감하게 늘리는 전략이 유효합니다."
-            
+            signal_text, signal_color = f"적극 매수 (향후 20일 {avg_return:.2f}% 상승 예상)", "#FF2A2A"
+            reasoning = "과거 전 구간 100% 상승 및 기대수익률 +5% 이상의 최상급 A급 진입 찬스입니다."
         elif win_rate == 100 and avg_return > 0 and min_ret >= -1.5:
-            signal_text = f"매수 고려 (향후 20거래일 동안 {avg_return:.2f}% 상승 예상)"
-            signal_color = "#FF4B4B" 
-            reasoning = f"예상 수익률({avg_return:.2f}%)은 크지 않으나, 승률이 100%이며 최악의 경우에도 하락폭({min_ret:.2f}%)이 극히 제한적인 **[하방 경직성 보장 구간]**입니다. 손실 가능성이 낮으므로 안전 지향형 진입에 적합합니다."
-            
+            signal_text, signal_color = f"매수 고려 (향후 20일 {avg_return:.2f}% 상승 예상)", "#FF4B4B"
+            reasoning = "예상 수익률은 낮으나 100% 승률과 극도로 제한된 하방(최대 -1.5% 이내)이 보장된 안전 진입 구간입니다."
         elif win_rate >= 66 and risk_reward_ratio >= 2.0:
-            signal_text = f"매수 고려 (향후 20거래일 동안 {avg_return:.2f}% 상승 예상)"
-            signal_color = "#FF4B4B" 
-            reasoning = f"매수 최우선 지표인 승률이 66% 이상({win_rate:.1f}%)이며, 하락폭 대비 기대 상승폭(손익비)이 2배 이상 확보된 정석적인 퀀트 진입 구간입니다."
-            
+            signal_text, signal_color = f"매수 고려 (향후 20일 {avg_return:.2f}% 상승 예상)", "#FF4B4B"
+            reasoning = "승률 66% 이상 및 손익비(하락대비 상승폭) 2배 이상의 정석적인 퀀트 매수 구간입니다."
         elif avg_return > 0 and win_rate < 50:
-            signal_text = "관망 (통계적 왜곡 리스크)"
-            signal_color = "#777777" 
-            reasoning = f"예상 평균 수익률은 {avg_return:.2f}%로 양수이나, 실제 승률은 {win_rate:.1f}%에 불과합니다. 이는 소수의 극단적 상승(착시 효과)이 평균값을 오염시킨 전형적인 **[모 아니면 도(High Risk)]** 국면이므로 진입을 엄격히 제한합니다."
-            
+            signal_text, signal_color = "관망 (통계적 왜곡 리스크)", "#777777"
+            reasoning = "평균은 양수이나 승률이 절반 미만인 전형적인 소수 폭등 착시(High Risk) 구간입니다."
         elif avg_return <= 0 and win_rate > 33:
-            signal_text = "관망 (방향성 부재)"
-            signal_color = "#777777"
-            reasoning = f"승률({win_rate:.1f}%)과 기대 수익률({avg_return:.2f}%) 모두 매매를 집행할 만한 통계적 우위를 확보하지 못했습니다. 추세가 명확해질 때까지 관망하십시오."
-            
+            signal_text, signal_color = "관망 (방향성 부재)", "#777777"
+            reasoning = "승률과 기대 수익률 모두 통계적 우위를 점하지 못한 중립 구간입니다."
         elif avg_return < 0 and win_rate <= 33 and min_ret >= -5.0:
-            signal_text = f"매도 고려 (향후 20거래일 동안 {abs(avg_return):.2f}% 하락 예상)"
-            signal_color = "#1C83E1" 
-            reasoning = f"승률이 현저히 낮고 평균 수익률이 음수 구간에 진입했습니다. 하방 리스크가 열려 있으므로 비중 축소 및 매도를 검토해야 합니다."
-            
+            signal_text, signal_color = f"매도 고려 (향후 20일 {abs(avg_return):.2f}% 하락 예상)", "#1C83E1"
+            reasoning = "낮은 승률과 평균치 하락이 예상되므로 비중 축소가 권장됩니다."
         else: 
-            signal_text = f"적극 매도 (향후 20거래일 동안 {abs(avg_return):.2f}% 하락 예상)"
-            signal_color = "#0055FF" 
-            reasoning = f"유사 국면들의 승률({win_rate:.1f}%)이 바닥권이며 강력한 하방 압력(최악의 경우 {min_ret:.2f}%)이 예상됩니다. 즉각적인 포지션 정리 및 하방 리스크 회피가 최우선입니다."
+            signal_text, signal_color = f"적극 매도 (향후 20일 {abs(avg_return):.2f}% 하락 예상)", "#0055FF"
+            reasoning = "강력한 하방 압력 및 바닥권 승률이 겹친 구간이므로 즉각적인 하방 리스크 회피가 필요합니다."
 
-        st.markdown(
-            f"<div style='border:2px solid {signal_color}; border-radius:10px; padding:20px; background-color:rgba(255,255,255,0.05);'>"
-            f"<h2 style='color:{signal_color}; margin-top:0px; text-align:center;'>{signal_text}</h2>"
-            f"<p style='font-size:16px; margin-bottom:0px;'><strong>[판단 근거]</strong> {reasoning}</p>"
-            f"</div>", 
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<div style='border:2px solid {signal_color}; border-radius:10px; padding:20px; background-color:rgba(255,255,255,0.05);'>"
+                    f"<h2 style='color:{signal_color}; margin-top:0px; text-align:center;'>{signal_text}</h2>"
+                    f"<p style='font-size:16px; margin-bottom:0px; text-align:center;'><strong>[판단 근거]</strong> {reasoning}</p></div><br>", unsafe_allow_html=True)
         
-        st.markdown("<br>", unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         c1.metric("앙상블 평균 예상 수익률", f"{avg_return:.2f}%")
         c2.metric("통계적 상승 승률", f"{win_rate:.1f}%")
         c3.metric("최대 Max / Min", f"{max_ret:.1f}% / {min_ret:.1f}%")
 
-        st.info(
-            f"💡 **[실전 매매 행동 지침]**\n"
-            f"- **자금 투입 비중 (거리 점수 연계):** 현재 평균 거리 점수는 **{avg_dist:.2f}**입니다. 거리가 낮을수록(패턴 일치도가 높을수록) 할당 시드머니의 70~80%까지 공격적 진입이 가능하며, 거리가 높다면 30% 이하로 비중을 통제하십시오.\n"
-            f"- **진입 타점 정밀화:** 거시 지표로 방향이 정해졌다면, 실제 매수는 이동평균선 주요 지지선이나 RSI 단기 과매도 권역 등 기술적 지표로 방아쇠를 당기십시오.\n"
-            f"- **청산 전략:** 매수 후 약 20거래일이 도래하면 포지션을 정리하는 것을 원칙으로 하며, 아래 시뮬레이션의 현재 경로(빨간선)가 과거 시나리오(실선)를 엇나가기 시작하면 즉각 대응하십시오."
-        )
+        st.markdown("---")
+        st.subheader("💡 정량적 실전 매매 행동 지침 (Numerical Action Plan)")
         
+        # 1. 자금 투입 비중 (거리 점수 연계)
+        alloc_level = ""
+        alloc_ratio = ""
+        # 거리 기준: 통상적으로 15 이하면 매우 가까움, 25 이상이면 멈. (유동적 데이터스케일 감안)
+        if avg_dist < 15.0:
+            alloc_level, alloc_ratio = "공격적", "70% 이상"
+        elif 15.0 <= avg_dist < 25.0:
+            alloc_level, alloc_ratio = "중립적", "50% 전후"
+        else:
+            alloc_level, alloc_ratio = "보수적", "30% 이하"
+            
+        st.markdown(f"**① 자금 투입 비중: <span style='color:#FF4B4B;'>{alloc_level} 진입 ({alloc_ratio} 할당)</span>**", unsafe_allow_html=True)
+        st.markdown(f"↳ **근거:** 현재 도출된 상위 국면들의 평균 유사도 거리 점수가 **{avg_dist:.2f}**로 산출되었습니다. "
+                    f"거리가 15 미만이면 과거 패턴과의 동조화가 극대화된 공격적 구간이며, 25 이상이면 오차 가능성을 대비해 비중을 30% 이하로 통제해야 합니다.")
+        
+        # 2. 진입 타점 정밀화 (기술적 지표 5개 연계)
+        if tech_data:
+            p_price = tech_data['price']
+            st.markdown(f"**② 진입 타점 정밀화 (현재가: {p_price:.2f})**")
+            
+            support_line = tech_data['sma20'] if p_price > tech_data['sma20'] else tech_data['sma50']
+            rsi_stat = "과매도(매수 유리)" if tech_data['rsi'] < 40 else "과매수(조정 주의)" if tech_data['rsi'] > 60 else "중립"
+            vol_stat = "기관/외인 수급 폭발적 유입 추정" if tech_data['vol_ratio'] > 150 else "평이한 거래량 유지 중"
+            
+            # S&P500의 최근 5일 모멘텀을 선물 추세로 대용
+            macro_trend = df['^GSPC'].iloc[-1] - df['^GSPC'].iloc[-5]
+            macro_stat = "상승 추세(위험자산 선호)" if macro_trend > 0 else "하락 추세(위험자산 회피)"
+            
+            st.markdown(
+                f"- **이동평균선 주요 지지선:** **{support_line:.2f}** 부근 (돌파 시 강력한 지지대 역할 기대)\n"
+                f"- **RSI (14일) 지표:** **{tech_data['rsi']:.1f}** ({rsi_stat})\n"
+                f"- **최대 매물대 (Volume Profile):** 최근 45일간 최대 거래 밀집 구간인 **{tech_data['vp_support']:.2f}** 방어 여부 확인\n"
+                f"- **수급/OI 현황 프록시:** 최근 5일 거래량이 20일 평균 대비 **{tech_data['vol_ratio']:.1f}%** 발생 ({vol_stat})\n"
+                f"- **거시 선물 추이:** 글로벌 증시 벤치마크(S&P500) 기준 최근 5일 **{macro_stat}**\n"
+                f"↳ **종합 타점 제언:** 거시 시그널이 긍정적일 경우, 현재가 추격 매수보다는 **{support_line:.2f} (이평선 지지)**와 **{tech_data['vp_support']:.2f} (최대 매물대)** 사이의 밴드에서 분할 매수 진입을 권장합니다."
+            )
+        else:
+            st.markdown("**② 진입 타점 정밀화:** 해당 종목의 실시간 기술적 지표를 불러올 수 없습니다.")
+
+        # 3. 청산 전략 (궤적 이탈 검사)
+        curr_series = df[target_stock].iloc[-window:].values
+        curr_norm = (curr_series - np.min(curr_series)) / (np.max(curr_series) - np.min(curr_series))
+        curr_slope = curr_norm[-1] - curr_norm[-5] # 현재 경로 최근 5일 정규화 기울기
+        avg_past_slope = np.mean(past_slopes)      # 과거 시나리오 동일 시점 평균 기울기
+        
+        exit_signal, exit_color, exit_reason = "", "", ""
+        slope_diff = curr_slope - avg_past_slope
+        
+        # 궤적 이탈 임계치(Threshold) 검사
+        if slope_diff >= -0.05:
+            exit_signal, exit_color = "매수 유지", "#FF4B4B"
+            exit_reason = f"현재 경로의 최근 5일 상승 탄력({curr_slope:+.3f})이 과거 시나리오의 평균 궤적({avg_past_slope:+.3f})을 정상적으로 추종하거나 오히려 상회하고 있습니다. 20일 청산 시점까지 포지션을 강력히 유지하십시오."
+        elif -0.15 <= slope_diff < -0.05:
+            exit_signal, exit_color = "관망 (경고)", "#777777"
+            exit_reason = f"현재 경로의 상승 탄력({curr_slope:+.3f})이 과거 평균 궤적({avg_past_slope:+.3f})보다 둔화되며 하단으로 미세 이탈 중입니다. 신규 매수는 보류하고 지지선 붕괴 여부를 관망하십시오."
+        else:
+            exit_signal, exit_color = "매도 (이탈 확정)", "#0055FF"
+            exit_reason = f"현재 경로의 모멘텀({curr_slope:+.3f})이 과거 궤적({avg_past_slope:+.3f})을 심각하게 하향 이탈했습니다. 과거의 성공 시나리오가 무효화되었으므로 20일을 기다리지 말고 즉각 익절/손절 청산을 집행하십시오."
+            
+        st.markdown(f"**③ 청산 전략 (실시간 궤적 추적): <span style='color:{exit_color};'>{exit_signal}</span>**", unsafe_allow_html=True)
+        st.markdown(f"↳ **근거:** {exit_reason}")
+
         # --- 📈 4. 예상 주가 경로 시뮬레이션 ---
         st.subheader(f"📈 4. {target_stock}의 향후 예상 주가 경로 시뮬레이션")
         path_fig = go.Figure()
-        curr_series = df[target_stock].iloc[-window:].values
-        curr_norm = (curr_series - np.min(curr_series)) / (np.max(curr_series) - np.min(curr_series))
         
-        path_fig.add_trace(go.Scatter(
-            y=curr_norm, 
-            mode='lines', 
-            name='현재 실제 경로', 
-            line=dict(color='red', width=4)
-        ))
+        path_fig.add_trace(go.Scatter(y=curr_norm, mode='lines', name='현재 실제 경로', line=dict(color='red', width=4)))
         
         for rank, (match_idx, _) in enumerate(top_matches):
             past_full_series = df[target_stock].iloc[match_idx : match_idx + window + 20].values
             past_norm = (past_full_series - np.min(past_full_series[:window])) / (np.max(past_full_series[:window]) - np.min(past_full_series[:window]))
+            path_fig.add_trace(go.Scatter(y=past_norm, mode='lines', name=f'클린 과거 {rank+1}위 시나리오', line=dict(width=2)))
             
-            path_fig.add_trace(go.Scatter(
-                y=past_norm, 
-                mode='lines', 
-                name=f'클린 과거 {rank+1}위 시나리오', 
-                line=dict(width=2)
-            ))
-            
-        path_fig.add_shape(
-            type="line", 
-            x0=window-1, y0=0, 
-            x1=window-1, y1=2, 
-            line=dict(color="black", width=2, dash="dot")
-        )
-        
-        path_fig.add_annotation(
-            x=window-1, y=1.5, 
-            text="현재 시점", 
-            showarrow=True, 
-            arrowhead=1
-        )
-        
-        path_fig.update_layout(
-            margin=dict(l=10, r=10, t=30, b=10), 
-            legend=dict(
-                orientation="h", 
-                yanchor="bottom", 
-                y=-0.3, 
-                xanchor="center", 
-                x=0.5
-            ), 
-            xaxis_title="경과 일수", 
-            yaxis_title="정규화 스케일"
-        )
-        
+        path_fig.add_shape(type="line", x0=window-1, y0=0, x1=window-1, y1=2, line=dict(color="black", width=2, dash="dot"))
+        path_fig.add_annotation(x=window-1, y=1.5, text="현재 시점", showarrow=True, arrowhead=1)
+        path_fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5), xaxis_title="경과 일수", yaxis_title="정규화 스케일")
         st.plotly_chart(path_fig, use_container_width=True)
