@@ -6,3 +6,5 @@ scipy
 scikit-learn
 hmmlearn
 matplotlib
+fastdtw
+plotly
