@@ -398,6 +398,10 @@ if run_sim:
         else:
             ta_text = "기술적 지표 데이터를 불러올 수 없습니다."
 
+        # [복원 완료] 에러의 원인이었던 누락된 궤적 변수 2줄 부활
+        curr_series = df[target_stock].iloc[-window:].values
+        curr_norm = (curr_series - np.min(curr_series)) / (np.max(curr_series) - np.min(curr_series))
+
         curr_slope = curr_norm[-1] - curr_norm[-5] 
         avg_past_slope = np.mean(past_slopes)      
         exit_signal, exit_color, exit_reason = "", "", ""
