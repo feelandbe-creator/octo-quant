@@ -199,7 +199,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="report-title">🛡️ AI 퀀트 터미널 : V4.7 (옥토만경)</div>', unsafe_allow_html=True)
+st.markdown('<div class="report-title">🛡️ AI 퀀트 터미널 : V4.9 (옥토만경)</div>', unsafe_allow_html=True)
 st.markdown('<div class="report-subtitle">실시간 정량적 실전 매매 지침 및 파생(OI) 수급 추적 엔진 탑재 리포트</div>', unsafe_allow_html=True)
 
 with st.expander("🎛️ 분석 설정", expanded=True):
@@ -269,6 +269,7 @@ if run_sim:
         avg_dist = np.mean(distances_list)
         risk_reward_ratio = max_ret / abs(min_ret) if min_ret < 0 else float('inf')
         
+        # 메인 시그널
         signal_text, signal_color, reasoning = "", "", ""
         if win_rate == 100 and avg_return >= 5.0:
             signal_text, signal_color = f"적극 매수 (향후 20일 {avg_return:.2f}% 상승 예상)", "#EF4444"
@@ -299,7 +300,7 @@ if run_sim:
         </div>
         """, unsafe_allow_html=True)
         
-        # --- [복구 완료] 구형 중복 단추 4개 삭제 후 오직 2x2 그리드만 남김 ---
+        # 2x2 그리드 단추
         win_rate_color = "#EF4444" if win_rate >= 50 else "#3B82F6"
         avg_ret_color = "#EF4444" if avg_return > 0 else "#3B82F6"
         max_ret_color = "#EF4444"
@@ -325,7 +326,6 @@ if run_sim:
                     <div style="color: {min_ret_color}; font-size: 28px; font-weight: 700;">{min_ret:+.1f}%</div>
                 </div>
             </div>
-            <!-- 정중앙 20일 원형 뱃지 -->
             <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
                         width: 70px; height: 70px; background-color: #1F2937; border: 3px solid #374151; 
                         border-radius: 50%; display: flex; align-items: center; justify-content: center; 
@@ -336,9 +336,7 @@ if run_sim:
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("#### 📌 정량적 매매 액션 플랜")
-        
-        # --- [복구 완료] 사라졌던 기술적 타점, 옵션 수급, 궤적 추적 데이터 원상 복구 ---
+        # 액션 플랜 데이터 연산
         def fmt_trend_color(val):
             return f"<span style='color:#EF4444; font-weight:700;'>{val:+.3f}</span>" if val > 0 else f"<span style='color:#3B82F6; font-weight:700;'>{val:+.3f}</span>"
 
@@ -400,8 +398,6 @@ if run_sim:
         else:
             ta_text = "기술적 지표 데이터를 불러올 수 없습니다."
 
-        curr_series = df[target_stock].iloc[-window:].values
-        curr_norm = (curr_series - np.min(curr_series)) / (np.max(curr_series) - np.min(curr_series))
         curr_slope = curr_norm[-1] - curr_norm[-5] 
         avg_past_slope = np.mean(past_slopes)      
         exit_signal, exit_color, exit_reason = "", "", ""
@@ -410,20 +406,20 @@ if run_sim:
         curr_slope_str = fmt_trend_color(curr_slope)
         avg_past_slope_str = fmt_trend_color(avg_past_slope)
         
-        # [수정 완료] 궤적 추적 모멘텀 강도에 따른 4단계 단기 전술(Tactics) 및 옥토만경님 코멘트 주입
         if slope_diff >= 0.05:
-            exit_signal, exit_color = "공격적 매수", "#EF4444" # 빨강
+            exit_signal, exit_color = "공격적 매수", "#EF4444" 
             exit_reason = f"상승 탄력({curr_slope_str})이 과거 평균({avg_past_slope_str})을 강하게 상회하며 폭발 중입니다. 저항선 돌파가 확인되면 추격 매수를 통해 단기 수익을 극대화하는 <b>'공격적 매수'</b> 전술이 유효합니다."
         elif -0.05 <= slope_diff < 0.05:
-            exit_signal, exit_color = "점진적 매수", "#EF4444" # 빨강
+            exit_signal, exit_color = "점진적 매수", "#EF4444" 
             exit_reason = f"현재 궤적({curr_slope_str})이 과거 평균({avg_past_slope_str})을 안정적으로 추종하고 있습니다. 주요 지지선 부근에서 단기 조정이 올 때마다 물량을 모아가는 <b>'점진적 매수'</b> 전술을 권장합니다."
         elif -0.15 <= slope_diff < -0.05:
-            exit_signal, exit_color = "관망 (점진적 매도)", "#9CA3AF" # 회색
+            exit_signal, exit_color = "관망 (점진적 매도)", "#9CA3AF" 
             exit_reason = f"상승 탄력이 과거 궤적보다 둔화되며 하단 이탈 중입니다. 지지선 붕괴를 주의하십시오. 아직 탈출 기회가 남아있을 수 있으니, 장중 반등이 올 때마다 비중을 축소하면서 <b>'질서 있는 후퇴(점진적 매도)'</b> 전술을 취해야 합니다."
         else:
-            exit_signal, exit_color = "공격적 매도", "#3B82F6" # 파랑
+            exit_signal, exit_color = "공격적 매도", "#3B82F6" 
             exit_reason = f"모멘텀({curr_slope_str})이 과거 궤적({avg_past_slope_str})을 하향 이탈 확정했습니다. 과거의 상승 시나리오가 완전히 무효화되었으므로, 즉각적인 투매로 하방 리스크를 차단하는 <b>'공격적 매도'</b> 전술을 집행하십시오."
 
+        st.markdown("#### 📌 정량적 매매 액션 플랜")
         st.markdown(f"""
         <div class="metric-card">
             <b style='font-size:16px; color:#F9FAFB;'>① 자금 투입 비중 (DTW 거리 기반):</b> <span style='color:#EF4444; font-size:16px;'>{alloc_level} 진입 ({alloc_ratio})</span><br>
@@ -438,8 +434,30 @@ if run_sim:
             <span style='color:#9CA3AF; font-size:14.5px; line-height: 1.6;'>└ <b>[실전 가이드]</b> {exit_reason}</span>
         </div>
         """, unsafe_allow_html=True)
+        
+        st.markdown('<div class="section-header">🔍 2. 앙상블 패턴 매칭 분석 (과거 상위 국면 상세)</div>', unsafe_allow_html=True)
+        
+        for i in range(0, len(top_matches), 3):
+            chunk = top_matches[i:i+3]
+            cols = st.columns(len(chunk))
+            for rank, (match_idx, dist_score) in enumerate(chunk):
+                actual_rank = i + rank + 1
+                m_start = df.index[match_idx].strftime('%Y-%m-%d')
+                m_end = df.index[match_idx + window].strftime('%Y-%m-%d')
+                ret = returns_list[i + rank]
+                ret_color = "#EF4444" if ret > 0 else "#3B82F6"
+                
+                with cols[rank]:
+                    st.markdown(f"""
+                    <div style='background-color: rgba(255,255,255,0.03); padding: 15px; border-radius: 8px; border: 1px solid #374151; margin-bottom: 10px;'>
+                        <div style='color: #F9FAFB; font-weight: 700; font-size: 15px; margin-bottom: 5px; border-bottom: 1px solid #4B5563; padding-bottom: 5px;'>[과거 상위 {actual_rank}위 패턴]</div>
+                        <div style='color: #9CA3AF; font-size: 13.5px;'>📅 {m_start} ~ {m_end}</div>
+                        <div style='margin-top: 10px; font-size: 14px; color: #D1D5DB;'>패턴 거리 점수 (일치도): <b>{dist_score:.2f}</b></div>
+                        <div style='font-size: 14px; color: #D1D5DB; margin-top: 5px;'>이후 20일 실제 수익률: <b style='color: {ret_color}; font-size: 16px;'>{ret:+.2f}%</b></div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-        st.markdown('<div class="section-header">📈 2. 궤적 추적 시뮬레이션 차트</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📈 3. 궤적 추적 시뮬레이션 차트</div>', unsafe_allow_html=True)
         path_fig = go.Figure()
         
         path_fig.add_trace(go.Scatter(y=curr_norm, mode='lines', name='현재 실제 경로', line=dict(color='#EF4444', width=4)))
@@ -473,22 +491,8 @@ if run_sim:
         )
         st.plotly_chart(path_fig, use_container_width=True)
 
-
-        st.markdown('<div class="section-header">🔍 3. 기초 데이터 및 가중치 분석</div>', unsafe_allow_html=True)
-        col_w, col_t = st.columns([1, 2])
-        
-        with col_w:
-            st.markdown("**매크로 지표 동적 가중치**")
-            weight_fig = go.Figure([go.Bar(x=list(feature_weights.keys()), y=list(feature_weights.values()), marker_color='#3B82F6')])
-            weight_fig.update_layout(height=250, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', xaxis=dict(tickfont=dict(color="#9CA3AF")), yaxis=dict(tickfont=dict(color="#9CA3AF")))
-            st.plotly_chart(weight_fig, use_container_width=True)
-            
-        with col_t:
-            st.markdown("**클린 상위 매칭 구간 원본 데이터**")
-            match_data = []
-            for rank, (match_idx, dist_score) in enumerate(top_matches):
-                m_start = df.index[match_idx].strftime('%Y-%m-%d')
-                m_end = df.index[match_idx + window].strftime('%Y-%m-%d')
-                ret = returns_list[rank]
-                match_data.append({"순위": f"{rank+1}위", "시작일": m_start, "종료일(현재시점)": m_end, "거리점수(일치도)": round(dist_score, 2), "이후 20일 수익률": f"{ret:+.2f}%"})
-            st.dataframe(pd.DataFrame(match_data), use_container_width=True, hide_index=True)
+        st.markdown('<div class="section-header">🔍 4. 거시 지표 가중치 분석</div>', unsafe_allow_html=True)
+        st.markdown("**현재 시장을 지배하는 매크로 변수 동적 가중치**")
+        weight_fig = go.Figure([go.Bar(x=list(feature_weights.keys()), y=list(feature_weights.values()), marker_color='#3B82F6')])
+        weight_fig.update_layout(height=250, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', xaxis=dict(tickfont=dict(color="#9CA3AF")), yaxis=dict(tickfont=dict(color="#9CA3AF")))
+        st.plotly_chart(weight_fig, use_container_width=True)
