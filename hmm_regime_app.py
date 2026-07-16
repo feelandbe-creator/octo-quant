@@ -1,156 +1,144 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import numpy as np
-import matplotlib.pyplot as plt
+import yfinance as yf
 from hmmlearn.hmm import GaussianHMM
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import urllib3
 
-# SSL 경고 차단
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-st.set_page_config(page_title="AI Regime Switching", page_icon="🛡️", layout="wide")
-
-st.markdown("""
-    <style>
-    .block-container { padding-top: 1.5rem; padding-bottom: 0rem; }
-    h1 { color: #1E3A8A; font-size: 1.4rem; }
-    .stDataFrame { font-size: 0.85rem; }
-    </style>
-""", unsafe_allow_html=True)
-
-st.title("🛡️ AI Hidden Markov Regime Switching Model")
+# 페이지 기본 설정
+st.set_page_config(page_title="Wall St. HMM Regime Engine", layout="wide")
+st.title("🛡️ Wall Street HMM Regime Switching Model (V2 완전체)")
 st.caption(f"판독 기준 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (KST)")
-st.divider()
 
-# ==========================================
-# [엔진 1] 거시 경제 데이터 수집 (S&P 500 기준)
-# ==========================================
-@st.cache_data(ttl=86400) # 하루 한 번만 캐싱 (일봉 기준이므로)
-def fetch_market_data():
-    # 10년간의 S&P 500(SPY) ETF 데이터를 가져와 글로벌 시장 상태를 판독합니다.
+# --- 1. 데이터 수집 함수 (SPY, VIX, TNX 병합) ---
+@st.cache_data(ttl=3600)
+def fetch_macro_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * 10)
+    start_date = end_date - timedelta(days=365 * 10) # 10년치 데이터
     
-    df = yf.download('SPY', start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)
+    # yfinance 버전 충돌 및 다중 인덱스 에러를 방지하기 위해 각각 호출 후 병합
+    spy_raw = yf.download('SPY', start=start_date, end=end_date)
+    vix_raw = yf.download('^VIX', start=start_date, end=end_date)
+    tnx_raw = yf.download('^TNX', start=start_date, end=end_date)
     
-    # yfinance 최신 버전 다중 인덱스 처리 완벽 방어 로직
-    if isinstance(df.columns, pd.MultiIndex):
-        close_data = df['Close']
-        if isinstance(close_data, pd.DataFrame):
-            df = close_data.copy()
-            df.columns = ['Close']  # 컬럼 이름을 'Close'로 강제 통일
-        else:
-            df = close_data.to_frame(name='Close')
-    else:
-        df = df[['Close']]
-        
-    # AI에게 학습시킬 '특징(Features)' 추출: 1. 일일 수익률, 2. 10일 변동성
-    df['Return'] = df['Close'].pct_change()
-    df['Volatility'] = df['Return'].rolling(window=10).std()
-    df.dropna(inplace=True)
+    # 다중 인덱스 방어 로직 적용하여 'Close' 값만 안전하게 추출
+    def get_close(df):
+        if isinstance(df.columns, pd.MultiIndex):
+            return df['Close'].iloc[:, 0]
+        return df['Close']
+
+    df = pd.DataFrame()
+    df['SPY'] = get_close(spy_raw)
+    df['VIX'] = get_close(vix_raw)
+    df['TNX'] = get_close(tnx_raw)
+    
+    # 결측치(휴장일 차이 등) 제거
+    df = df.dropna()
+    
+    # HMM 인공지능이 학습할 3가지 핵심 피처(Feature) 생성
+    df['Return'] = df['SPY'].pct_change() # 주가 수익률
+    df['VIX_Level'] = df['VIX']           # VIX 절대 수치 (공포감)
+    df['TNX_Diff'] = df['TNX'].diff()     # 10년물 국채 금리 변화량 (유동성/긴축)
+    
+    df = df.dropna()
     return df
 
-# ==========================================
-# [엔진 2] HMM (은닉 마르코프 모델) AI 학습
-# ==========================================
+# --- 2. HMM 모델 학습 함수 ---
 @st.cache_resource
-def train_hmm_model(df):
-    # 수익률과 변동성 데이터를 HMM에 맞게 배열 변환
-    X = np.column_stack([df['Return'].values, df['Volatility'].values])
+def fit_hmm_model(df):
+    # 입력 데이터: 1.수익률, 2.VIX수치, 3.금리변화
+    X = df[['Return', 'VIX_Level', 'TNX_Diff']].values
     
-    # 시장 국면(Regime)을 3가지(상승, 횡보, 하락)로 분류하는 AI 모델 생성
+    # 은닉 마르코프 모델(HMM) 생성 (3개의 국면으로 분류)
     model = GaussianHMM(n_components=3, covariance_type="full", n_iter=1000, random_state=42)
     model.fit(X)
     
-    # 과거 10년간의 매일매일이 어떤 국면이었는지 판독 (0, 1, 2 중 하나)
+    # 각 날짜별 국면 예측
     hidden_states = model.predict(X)
-    df['State'] = hidden_states
+    df['Regime'] = hidden_states
     
-    # 0, 1, 2 로 무작위 배정된 상태를 인간이 이해할 수 있게 '수익률 대비 변동성' 기준으로 정렬
-    state_stats = df.groupby('State')['Return'].mean() / df.groupby('State')['Volatility'].mean()
+    # 인공지능이 임의로 나눈 0, 1, 2 국면을 VIX(공포지수) 평균치 기준으로 재정렬
+    # VIX가 가장 낮은 곳 = 평온(상승장), VIX가 가장 높은 곳 = 공포(폭락장)
+    mean_vix_by_regime = [df[df['Regime'] == i]['VIX_Level'].mean() for i in range(3)]
     
-    # 샤프 지수(수익률/변동성)가 가장 높은 곳이 1급(안전 상승장), 가장 낮은 곳이 3급(위험 폭락장)
-    sorted_states = state_stats.sort_values(ascending=False).index
+    # VIX 평균이 낮은 순서대로 국면 번호(0, 1, 2) 정렬
+    sorted_regimes = np.argsort(mean_vix_by_regime)
+    
     state_map = {
-        sorted_states[0]: "🟢 국면 1: 안정적 상승장 (Risk-On)",
-        sorted_states[1]: "🟡 국면 2: 고변동성 횡보장 (Neutral)",
-        sorted_states[2]: "🔴 국면 3: 공포/폭락장 (Risk-Off)"
+        sorted_regimes[0]: ('🟢 상승/안정 국면 (Safe)', 'green'),
+        sorted_regimes[1]: ('🟡 변동성 확대/조정 국면 (Warning)', 'orange'),
+        sorted_regimes[2]: ('🔴 공포/폭락 국면 (Danger - 비중 축소)', 'red')
     }
     
-    df['Regime_Name'] = df['State'].map(state_map)
     return df, model, state_map
 
-# 데이터 로드 및 AI 판독 실행
-with st.spinner('인공지능이 과거 10년간의 시장 빅데이터를 학습하여 현재 국면을 판독 중입니다...'):
-    market_df = fetch_market_data()
-    analyzed_df, hmm_model, state_map = train_hmm_model(market_df)
+# --- 3. 메인 로직 및 화면 출력 ---
+try:
+    with st.spinner("AI가 지난 10년간의 주가, VIX, 금리 데이터를 분석 중입니다..."):
+        macro_df = fetch_macro_data()
+        analyzed_df, hmm_model, state_map = fit_hmm_model(macro_df)
+        
+    current_state_idx = analyzed_df['Regime'].iloc[-1]
+    current_state_info = state_map[current_state_idx]
+    
+    # 최신 데이터 추출
+    last_spy = analyzed_df['SPY'].iloc[-1]
+    last_vix = analyzed_df['VIX'].iloc[-1]
+    last_tnx = analyzed_df['TNX'].iloc[-1]
+    
+    st.subheader("📊 현재 거시 경제 (Macro) 투심 판독 결과")
+    
+    # 상단 지표 카드
+    col1, col2, col3 = st.columns(3)
+    col1.metric("S&P 500 (SPY)", f"${last_spy:.2f}", f"{analyzed_df['Return'].iloc[-1]*100:.2f}%")
+    col2.metric("VIX (공포지수)", f"{last_vix:.2f}", "30 이상시 극도의 공포", delta_color="inverse")
+    col3.metric("미 10년물 금리 (TNX)", f"{last_tnx:.2f}%", f"{analyzed_df['TNX_Diff'].iloc[-1]:.3f}%p", delta_color="inverse")
+    
+    # AI 판독 결과 박스
+    st.markdown(f"""
+    <div style="padding: 20px; border-radius: 10px; background-color: {current_state_info[1]}; color: white; text-align: center;">
+        <h2 style="margin: 0;">현재 AI 판독 국면: {current_state_info[0]}</h2>
+        <p style="margin-top: 10px; font-size: 16px;">VIX와 국채 금리의 복합 흐름을 분석한 결과입니다.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.divider()
 
-# ==========================================
-# [대시보드] 현재 시장 상태 및 투자 비중 제안
-# ==========================================
-current_regime = analyzed_df['Regime_Name'].iloc[-1]
-current_close = analyzed_df['Close'].iloc[-1]
-current_vol = analyzed_df['Volatility'].iloc[-1] * 100
+    # --- 4. 시각화 (Matplotlib 차트) ---
+    st.subheader("📈 10년 주가 흐름 및 AI 국면 감지 히스토리")
+    
+    fig, ax = plt.subplots(figsize=(15, 6))
+    
+    # SPY 주가 라인 그리기
+    ax.plot(analyzed_df.index, analyzed_df['SPY'], color='black', label='SPY Price', linewidth=1)
+    
+    # AI가 판독한 국면(Regime)별로 배경색 칠하기
+    colors = {0: 'green', 1: 'orange', 2: 'red'}
+    for i in range(3):
+        # 현재 국면에 해당하는 날짜들만 필터링
+        regime_dates = analyzed_df[analyzed_df['Regime'] == i].index
+        # vspan을 이용하여 배경색 채우기 (scatter 대신 배경색을 칠하여 직관성 극대화)
+        ax.scatter(regime_dates, analyzed_df.loc[regime_dates, 'SPY'], 
+                   color=[state_map[r][1] for r in analyzed_df.loc[regime_dates, 'Regime']], 
+                   s=10, alpha=0.5, label=state_map[i][0])
 
-st.subheader("🤖 AI 현재 시장 국면 판독 결과")
+    ax.set_title("S&P 500 Price & AI Detected Regimes (VIX + TNX + SPY)", fontsize=16)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("SPY Price (USD)")
+    # 중복 라벨 제거
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='upper left')
+    ax.grid(True, alpha=0.3)
+    
+    st.pyplot(fig)
+    
+    st.info("""
+    **💡 V2 엔진 관전 포인트 (모의투자용):** 코로나19 폭락, 2022년 금리인상 발 하락장 등 역사적인 위기 순간에 차트의 점선이 🔴 빨간색(공포 국면)으로 
+    정확히 칠해졌는지 확인해 보십시오. 이제 VIX와 금리까지 실시간으로 반영하여 위험을 감지합니다.
+    """)
 
-# 국면에 따른 UI 동적 표시 및 자산 배분 비중 결정
-if "🟢" in current_regime:
-    st.success(f"현재 시장은 **{current_regime}** 입니다. 주식 비중 확대를 권장합니다.")
-    stock_weight, cash_weight = 100, 0
-elif "🟡" in current_regime:
-    st.warning(f"현재 시장은 **{current_regime}** 입니다. 방향성 탐색 구간이므로 방어적 투자가 필요합니다.")
-    stock_weight, cash_weight = 50, 50
-else:
-    st.error(f"현재 시장은 **{current_regime}** 입니다. 시스템 매매를 중단하고 즉시 현금화하십시오.")
-    stock_weight, cash_weight = 0, 100
-
-# 주요 지표 메트릭 표시
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("SPY 현재가", f"${current_close:.2f}")
-col2.metric("현재 시장 단기 변동성", f"{current_vol:.2f}%")
-col3.metric("권장 주식(KOSPI/SPY) 비중", f"{stock_weight}%")
-col4.metric("권장 현금/채권 비중", f"{cash_weight}%")
-
-st.divider()
-
-# ==========================================
-# [시각화] 과거 국면 판독 백테스트 차트
-# ==========================================
-st.subheader("📈 지난 3년간의 AI 국면 판독 기록 (백테스트)")
-st.write("AI가 하락장(빨간색)을 얼마나 정확하게 회피하라고 경고했는지 확인하십시오.")
-
-# 최근 3년(약 750 거래일) 데이터만 시각화
-plot_df = analyzed_df.tail(750)
-
-fig, ax = plt.subplots(figsize=(12, 5))
-ax.plot(plot_df.index, plot_df['Close'], color='gray', linewidth=1, label='S&P 500 Index')
-
-# 국면별로 배경색 칠하기
-colors = {"🟢": "#c4eed0", "🟡": "#f9ab00", "🔴": "#ffcdd2"}
-
-for state_char, color in colors.items():
-    # 해당 국면에 속하는 구간의 인덱스를 찾음
-    mask = plot_df['Regime_Name'].str.contains(state_char)
-    ax.fill_between(plot_df.index, plot_df['Close'].min(), plot_df['Close'].max(), 
-                    where=mask, facecolor=color, alpha=0.3, label=f'Regime {state_char}')
-
-ax.set_title("S&P 500 Price & AI HMM Regimes", fontsize=14)
-ax.set_ylabel("Price")
-ax.grid(alpha=0.2)
-
-# 중복 라벨 제거용
-handles, labels = plt.gca().get_legend_handles_labels()
-by_label = dict(zip(labels, handles))
-ax.legend(by_label.values(), by_label.keys(), loc='upper left')
-
-st.pyplot(fig)
-
-st.info("""
-**[HMM 방어 쉴드 작동 원리]**
-* KOSPI는 글로벌 거시 경제(S&P 500)의 큰 흐름을 벗어날 수 없습니다. 
-* 본 모델은 S&P 500의 일일 수익률과 변동성을 HMM(은닉 마르코프) AI에 투입하여, 현재 시장이 '안전', '횡보', '위험' 중 어디에 속하는지 매일 추적합니다.
-* **빨간색(국면 3)** 이 점등되면 우리가 만든 KOSPI 스캐너의 매수 시그널이 아무리 좋게 나오더라도 **모든 매매를 강제 중지하고 현금을 관망**하는 용도로 사용됩니다.
-""")
+except Exception as e:
+    st.error(f"데이터 처리 중 에러가 발생했습니다: {str(e)}")
+    st.write("yfinance 데이터 로드 지연일 수 있습니다. 우측 상단의 점 3개를 누르고 'Clear cache'를 실행해 주세요.")
