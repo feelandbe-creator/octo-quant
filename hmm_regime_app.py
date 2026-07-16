@@ -35,9 +35,14 @@ def fetch_market_data():
     
     df = yf.download('SPY', start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)
     
-    # yfinance 최신 버전 다중 인덱스 처리 방어 로직
+    # yfinance 최신 버전 다중 인덱스 처리 완벽 방어 로직
     if isinstance(df.columns, pd.MultiIndex):
-        df = df['Close'].to_frame(name='Close')
+        close_data = df['Close']
+        if isinstance(close_data, pd.DataFrame):
+            df = close_data.copy()
+            df.columns = ['Close']  # 컬럼 이름을 'Close'로 강제 통일
+        else:
+            df = close_data.to_frame(name='Close')
     else:
         df = df[['Close']]
         
@@ -53,7 +58,7 @@ def fetch_market_data():
 @st.cache_resource
 def train_hmm_model(df):
     # 수익률과 변동성 데이터를 HMM에 맞게 배열 변환
-    X = np.column_state = df[['Return', 'Volatility']].values
+    X = np.column_stack([df['Return'].values, df['Volatility'].values])
     
     # 시장 국면(Regime)을 3가지(상승, 횡보, 하락)로 분류하는 AI 모델 생성
     model = GaussianHMM(n_components=3, covariance_type="full", n_iter=1000, random_state=42)
@@ -147,5 +152,5 @@ st.info("""
 **[HMM 방어 쉴드 작동 원리]**
 * KOSPI는 글로벌 거시 경제(S&P 500)의 큰 흐름을 벗어날 수 없습니다. 
 * 본 모델은 S&P 500의 일일 수익률과 변동성을 HMM(은닉 마르코프) AI에 투입하여, 현재 시장이 '안전', '횡보', '위험' 중 어디에 속하는지 매일 추적합니다.
-* **빨간색(국면 3)** 이 점등되면 우리가 만든 `app.py`(KOSPI 스캐너)의 매수 시그널이 아무리 좋게 나오더라도 **모든 매매를 강제 중지하고 현금을 관망**하는 용도로 사용됩니다.
+* **빨간색(국면 3)** 이 점등되면 우리가 만든 KOSPI 스캐너의 매수 시그널이 아무리 좋게 나오더라도 **모든 매매를 강제 중지하고 현금을 관망**하는 용도로 사용됩니다.
 """)
