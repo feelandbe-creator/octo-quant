@@ -1,112 +1,180 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 import re
 from datetime import datetime
 
-# 페이지 기본 설정
-st.set_page_config(page_title="Bilingual Event-Driven Sentiment Alpha", layout="wide")
-st.title("🔥 Real-Time NLP Event-Driven Sentiment Alpha (V2 - 한/영 이중언어 지원)")
-st.caption(f"시스템 가동 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (KST)")
-
-# --- 1. 글로벌 한/영 통합 금융 특화 감성 사전 ---
-# 영어 사전 (Loughran-McDonald 기반)
-EN_LEXICON = {
-    "beat": 1.0, "surprise": 0.8, "growth": 0.7, "surge": 0.9, "profit": 0.8,
-    "recovery": 0.6, "rebound": 0.6, "upgrade": 0.8, "bullish": 0.9, "record": 0.8,
-    "acquisition": 0.5, "dividend": 0.6, "outperform": 0.8, "breakthrough": 0.9,
-    "miss": -1.0, "decline": -0.7, "slump": -0.9, "loss": -0.8, "drop": -0.6,
-    "downgrade": -0.8, "bearish": -0.9, "deficit": -0.8, "bankruptcy": -1.0,
-    "lawsuit": -0.5, "fine": -0.4, "investigation": -0.6, "tariff": -0.7, "inflation": -0.5
+# --- 1. 금융 특화 NLP 감성 사전 (Financial Sentiment Lexicon) ---
+# 기관 투자자들이 주목하는 핵심 호재/악재 키워드 및 가중치 매핑
+SENTIMENT_DICT = {
+    "positive": [
+        "급등", "돌파", "상회", "서프라이즈", "흑자", "성장", "최대", "매수", "목표가 상향", "수주", "승인", "호조", "상승", "강세", "기대",
+        "surge", "jump", "beat", "exceed", "upgrade", "buy", "growth", "record", "profit", "rally", "outperform", "soar", "approval"
+    ],
+    "negative": [
+        "급락", "하회", "쇼크", "적자", "감소", "최저", "매도", "목표가 하향", "취소", "거절", "부진", "하락", "약세", "우려", "경고", "파산",
+        "plunge", "drop", "miss", "downgrade", "sell", "decline", "loss", "warning", "crash", "bankrupt", "underperform", "lawsuit"
+    ],
+    "magnifiers": [ # 강조어 (긍정/부정을 증폭)
+        "역대", "사상", "폭발적", "초유의", "강력한", "대규모",
+        "record", "massive", "strong", "huge", "unprecedented"
+    ]
 }
 
-# 한국어 사전 (KOSPI 공시 및 경제 기사 특화 어근)
-KR_LEXICON = {
-    # 강력 호재
-    "어닝 서프라이즈": 1.0, "급등": 0.9, "흑자": 0.9, "상향": 0.8, "돌파": 0.8, 
-    "수주": 0.8, "최대 실적": 1.0, "호조": 0.7, "상승": 0.6, "반등": 0.6,
-    "회복": 0.6, "배당": 0.6, "인수": 0.5, "혁신": 0.8, "수혜": 0.7, "승인": 0.7,
-    # 강력 악재
-    "어닝 쇼크": -1.0, "파산": -1.0, "상장폐지": -1.0, "급락": -0.9, "적자": -0.9,
-    "하향": -0.8, "악재": -0.8, "침체": -0.8, "부진": -0.7, "관세": -0.7,
-    "하락": -0.6, "조사": -0.6, "소송": -0.5, "과징금": -0.5, "인플레이션": -0.5, "매각": -0.4
-}
+# --- 2. Google News RSS 실시간 파싱 엔진 ---
+def fetch_top_news(query, num_articles=3):
+    # '주식' 또는 'stock' 키워드를 결합하여 금융 뉴스 정확도 향상
+    search_query = urllib.parse.quote(f"{query} stock OR {query} 주식 OR {query} 실적")
+    url = f"https://news.google.com/rss/search?q={search_query}&hl=ko&gl=KR&ceid=KR:ko"
+    
+    articles = []
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req, timeout=5)
+        xml_data = response.read()
+        root = ET.fromstring(xml_data)
+        
+        for item in root.findall('.//item')[:num_articles]:
+            title = item.find('title').text
+            link = item.find('link').text
+            pub_date = item.find('pubDate').text
+            articles.append({'title': title, 'link': link, 'date': pub_date})
+    except Exception as e:
+        st.error(f"뉴스 데이터를 가져오는 중 오류가 발생했습니다: {e}")
+    
+    return articles
 
-# --- 2. 한/영 하이브리드 NLP 분석 엔진 ---
+# --- 3. 경량화 NLP 감성 분석 알고리즘 ---
 def analyze_sentiment(text):
     text_lower = text.lower()
     pos_score = 0
     neg_score = 0
-    matched_words = []
+    magnifier_multiplier = 1.0
     
-    # [1] 영어 분석: 정확한 단어 매칭 (Word Boundary)
-    en_words = re.findall(r'\b[a-z]+\b', text_lower)
-    for word in en_words:
-        if word in EN_LEXICON:
-            val = EN_LEXICON[word]
-            matched_words.append(f"🇺🇸{word}({val})")
-            if val > 0: pos_score += val
-            else: neg_score += abs(val)
+    # 강조어 스캔
+    for word in SENTIMENT_DICT['magnifiers']:
+        if word in text_lower:
+            magnifier_multiplier = 1.5
+            break
+            
+    # 긍정어 스캔
+    for word in SENTIMENT_DICT['positive']:
+        # 정규식을 통해 단어 단위 매칭 가중치 부여
+        if re.search(r'\b' + re.escape(word) + r'\b', text_lower) or word in text_lower:
+            pos_score += 1
+            
+    # 부정어 스캔
+    for word in SENTIMENT_DICT['negative']:
+        if re.search(r'\b' + re.escape(word) + r'\b', text_lower) or word in text_lower:
+            neg_score += 1
+            
+    # 최종 스코어 연산 (기본값 50 기준)
+    net_score = (pos_score - neg_score) * 15 * magnifier_multiplier
+    final_score = max(0, min(100, 50 + net_score)) # 0 ~ 100 사이로 클리핑
+    
+    return final_score
 
-    # [2] 한국어 분석: 형태소 붕괴를 방지하는 어근(Root) 부분 매칭
-    # (예: '하락세를' 이라는 단어 안에 '하락'이 포함되어 있으면 감지)
-    for kr_word, val in KR_LEXICON.items():
-        if kr_word in text: # 부분 일치 검색
-            # 중복 카운트 방지 및 정확도 향상을 위해 출현 횟수만큼 가중치 부여
-            count = text.count(kr_word)
-            for _ in range(count):
-                matched_words.append(f"🇰🇷{kr_word}({val})")
-                if val > 0: pos_score += val
-                else: neg_score += abs(val)
-                
-    total = pos_score + neg_score
-    # 감성 점수 공식 (호재 비율 - 악재 비율)
-    if total > 0:
-        sentiment_score = (pos_score - neg_score) / total
-    else:
-        sentiment_score = 0.0
-        
-    return round(sentiment_score, 3), matched_words
+# --- 4. UI/UX 렌더링 (다크 테마 리포트 스타일) ---
+st.set_page_config(page_title="NLP Sentiment Alpha", layout="wide")
 
-# --- 3. 대시보드 화면 구성 ---
-st.subheader("📰 실시간 한/영 이중언어 감성 분석 터미널")
-st.markdown("미국 **Yahoo Finance** 영문 속보나 한국 **네이버 금융** 속보를 복사해서 붙여넣어 보십시오.")
+st.markdown("""
+<style>
+    .report-title { font-size: 26px; font-weight: 800; color: #F9FAFB; margin-bottom: 0px; }
+    .report-subtitle { font-size: 14px; color: #9CA3AF; margin-bottom: 30px; border-bottom: 2px solid #374151; padding-bottom: 10px; }
+    .metric-card { background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151; margin-bottom: 15px; }
+    .highlight-red { color: #EF4444; font-weight: 700; }
+    .highlight-blue { color: #3B82F6; font-weight: 700; }
+    .news-title { font-size: 16px; color: #60A5FA; text-decoration: none; font-weight: 600;}
+    .news-title:hover { text-decoration: underline; color: #93C5FD; }
+    .news-date { font-size: 12px; color: #9CA3AF; margin-bottom: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
-# 사용자 정의 뉴스 입력기
-custom_news = st.text_input("📝 직접 테스트할 뉴스 헤드라인 (한글/영문 모두 지원):", 
-                             value="삼성전자, 3분기 영업이익 10조원 돌파하며 어닝 서프라이즈 달성... 반도체 업황 뚜렷한 회복세")
+st.markdown('<div class="report-title">📰 Real-Time NLP Sentiment Alpha</div>', unsafe_allow_html=True)
+st.markdown('<div class="report-subtitle">실시간 뉴스 크롤링 및 이벤트 드리븐(Event-Driven) 투심 정량화 엔진</div>', unsafe_allow_html=True)
 
-if custom_news:
-    score, matches = analyze_sentiment(custom_news)
-    col1, col2 = st.columns([1, 3])
+# 검색 입력부
+with st.container():
+    col1, col2 = st.columns([3, 1])
     with col1:
-        if score > 0.1:
-            st.success(f"🟢 강력 호재 감지\n\nScore: {score:+.2f}")
-        elif score < -0.1:
-            st.error(f"🔴 강력 악재 감지\n\nScore: {score:+.2f}")
-        else:
-            st.warning(f"🟡 중립/판독 불가\n\nScore: {score:+.2f}")
+        target_query = st.text_input("분석할 종목명 또는 티커를 입력하세요 (예: 애플, TSLA, 삼성전자)", value="TSLA")
     with col2:
-        if matches:
-            st.write(f"🔍 **검출된 금융 핵심 토큰:**")
-            st.write(" | ".join(matches))
-        else:
-            st.write("🔍 **검출된 금융 핵심 토큰:** 없음 (사전에 등록되지 않은 단어입니다)")
+        st.markdown("<br>", unsafe_allow_html=True)
+        analyze_btn = st.button("🔍 실시간 뉴스 NLP 분석", use_container_width=True, type="primary")
 
-st.divider()
-
-# --- 4. 백테스팅 시뮬레이터 (구조 유지) ---
-st.subheader("📊 이벤트 드리븐 감성 매매 시뮬레이터")
-st.info("아래 시뮬레이터는 V1과 동일하게 작동하며, 설정한 파라미터(기준치, 감쇄율)에 따라 계좌 잔고가 어떻게 변하는지 확인하실 수 있습니다.")
-# (이하 시뮬레이터 코드는 동작을 위해 더미 형태로 축약하여 포함합니다)
-col_p1, col_p2, col_p3 = st.columns(3)
-with col_p1: threshold = st.slider("진입 감성 기준치 (Threshold)", 0.1, 0.9, 0.3, step=0.05)
-with col_p2: decay_rate = st.slider("신호 감쇄 강도 (Decay Rate)", 1, 10, 3)
-with col_p3: leverage = st.selectbox("레버리지 배수 (Leverage)", [1.0, 1.5, 2.0])
-
-# 가상 데이터 생성 및 차트 출력
-np.random.seed(42)
-dates = pd.date_range(end=datetime.now(), periods=30)
-prices = [5000.0 * (1 + np.random.normal(0.001, 0.01))**i for i in range(30)]
-sim_df = pd.DataFrame({"Date": dates, "Close": prices})
-st.line_chart(sim_df.set_index("Date")[["Close"]], height=200)
+if analyze_btn and target_query:
+    with st.spinner(f"'{target_query}' 관련 구글 실시간 뉴스 크롤링 및 투심 분석 중..."):
+        
+        # 1. 뉴스 데이터 수집
+        articles = fetch_top_news(target_query, num_articles=3)
+        
+        if not articles:
+            st.warning("관련 뉴스를 찾을 수 없거나 서버 통신에 실패했습니다. 다른 검색어로 시도해 주세요.")
+            st.stop()
+            
+        # 2. NLP 분석 처리
+        total_score = 0
+        analyzed_articles = []
+        
+        for article in articles:
+            score = analyze_sentiment(article['title'])
+            total_score += score
+            analyzed_articles.append({
+                'title': article['title'],
+                'link': article['link'],
+                'date': article['date'],
+                'score': score
+            })
+            
+        avg_sentiment_score = total_score / len(articles)
+        
+        # 3. 분석 결과 표시
+        st.markdown("---")
+        
+        # 상단 대시보드 (NLP 종합 점수)
+        score_color = "#EF4444" if avg_sentiment_score >= 60 else ("#3B82F6" if avg_sentiment_score <= 40 else "#9CA3AF")
+        sentiment_label = "초강세 (Bullish)" if avg_sentiment_score >= 70 else \
+                          "강세 (Positive)" if avg_sentiment_score >= 55 else \
+                          "약세 (Negative)" if avg_sentiment_score <= 45 else \
+                          "극단적 약세 (Bearish)" if avg_sentiment_score <= 30 else "중립 (Neutral)"
+                          
+        action_plan = "강력한 호재성 이벤트가 감지되었습니다. 롱(Long) 포지션 진입을 적극 검토하십시오." if avg_sentiment_score >= 60 else \
+                      "치명적인 악재성 이벤트가 감지되었습니다. 즉각적인 리스크 관리 및 숏(Short) 포지션 검토가 필요합니다." if avg_sentiment_score <= 40 else \
+                      "주가를 움직일 만한 뚜렷한 모멘텀 뉴스가 부재합니다. 기술적 분석에 의존하십시오."
+        
+        st.markdown(f"""
+        <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+            <div style="flex: 1; text-align: center; background-color: rgba(255,255,255,0.03); padding: 25px; border-radius: 8px; border: 1px solid #374151;">
+                <div style="color: #9CA3AF; font-size: 15px; margin-bottom: 5px;">종합 NLP 투심 점수 (0~100)</div>
+                <div style="color: {score_color}; font-size: 36px; font-weight: 800;">{avg_sentiment_score:.1f}점</div>
+                <div style="color: {score_color}; font-size: 16px; margin-top: 5px; font-weight: 600;">{sentiment_label}</div>
+            </div>
+            <div style="flex: 2; display: flex; flex-direction: column; justify-content: center; background-color: rgba(255,255,255,0.03); padding: 25px; border-radius: 8px; border: 1px solid #374151;">
+                <div style="color: #F9FAFB; font-size: 18px; font-weight: 700; margin-bottom: 10px;">💡 이벤트 드리븐 액션 플랜</div>
+                <div style="color: #D1D5DB; font-size: 15px; line-height: 1.6;">{action_plan}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 추출된 뉴스 리스트 및 개별 점수
+        st.markdown("<h4 style='color: #F9FAFB; margin-top: 30px;'>📰 AI 분석 헤드라인 (Top 3)</h4>", unsafe_allow_html=True)
+        
+        for idx, item in enumerate(analyzed_articles):
+            ind_color = "#EF4444" if item['score'] >= 55 else ("#3B82F6" if item['score'] <= 45 else "#9CA3AF")
+            st.markdown(f"""
+            <div class="metric-card">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div style="flex: 8; padding-right: 15px;">
+                        <a href="{item['link']}" target="_blank" class="news-title">[{idx+1}] {item['title']}</a>
+                        <div class="news-date">발행: {item['date']}</div>
+                    </div>
+                    <div style="flex: 1; text-align: right; border-left: 1px solid #4B5563; padding-left: 15px;">
+                        <div style="font-size: 12px; color: #9CA3AF;">개별 투심 점수</div>
+                        <div style="font-size: 20px; font-weight: 700; color: {ind_color};">{item['score']:.0f}점</div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
