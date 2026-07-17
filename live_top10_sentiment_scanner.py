@@ -121,7 +121,13 @@ def scan_news_sentiment(universe_dict, is_kr=False):
                 news_items.append(title)
             
             if not news_items:
-                results.append({"종목명": name, "티커": ticker, "투심 점수": 0.0, "상태": "⚪ 중립 (뉴스 없음)", "최신 뉴스 요약": "최근 수집된 뉴스가 없습니다."})
+                results.append({
+                    "종목명": name, 
+                    "티커": ticker, 
+                    "종합 NLP 투심 점수 (0~100)": 50, 
+                    "상태": "⚪ 중립 (뉴스 없음)", 
+                    "최신 뉴스 요약": "최근 수집된 뉴스가 없습니다."
+                })
                 continue
                 
             total_score = 0
@@ -136,6 +142,10 @@ def scan_news_sentiment(universe_dict, is_kr=False):
             
             avg_score = total_score / len(news_items)
             
+            # -1.0 ~ +1.0의 점수를 0 ~ 100 점수로 직관적으로 변환 (50점이 중립)
+            nlp_score_100 = int(round((avg_score + 1.0) * 50))
+            nlp_score_100 = max(0, min(100, nlp_score_100)) # 0~100 사이 보정
+            
             # 직관적인 상태 판독
             if avg_score >= 0.3: status = "🟢 강력 매수 (호재)"
             elif avg_score >= 0.1: status = "🟡 긍정적 (호조)"
@@ -146,12 +156,18 @@ def scan_news_sentiment(universe_dict, is_kr=False):
             results.append({
                 "종목명": name,
                 "티커": ticker,
-                "투심 점수": avg_score,
+                "종합 NLP 투심 점수 (0~100)": nlp_score_100,
                 "상태": status,
                 "최신 뉴스 요약": "\n".join(news_details) # 줄바꿈으로 합치기
             })
         except Exception as e:
-            results.append({"종목명": name, "티커": ticker, "투심 점수": 0.0, "상태": "⚪ 통신 에러", "최신 뉴스 요약": f"뉴스 수집 실패: {str(e)}"})
+            results.append({
+                "종목명": name, 
+                "티커": ticker, 
+                "종합 NLP 투심 점수 (0~100)": 50, 
+                "상태": "⚪ 통신 에러", 
+                "최신 뉴스 요약": f"뉴스 수집 실패: {str(e)}"
+            })
             
     return pd.DataFrame(results)
 
