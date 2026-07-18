@@ -8,3 +8,4 @@ hmmlearn
 matplotlib
 fastdtw
 plotly
+pytz
