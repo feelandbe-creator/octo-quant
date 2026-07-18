@@ -25,7 +25,7 @@ def get_current_times():
 
 kst_time, edt_time = get_current_times()
 
-# --- 2. 예측 데이터 목업 함수 (UI 복원용) ---
+# --- 2. 예측 데이터 목업 함수 ---
 def get_macro_predictions():
     return pd.DataFrame({
         '지수명': ['다우존스 (DJIA)', '나스닥 (IXIC)', '필라델피아 반도체 (SOX)', '다우 운송 (DJT)'],
@@ -74,20 +74,17 @@ def get_sector_predictions():
 DATA_FILE = "daily_predictions.csv"
 
 def get_flat_micro_predictions():
-    """트래커 검증을 위해 종목별 중간값을 추출하여 평탄화하는 함수"""
     long_sectors, short_sectors = get_sector_predictions()
     data = []
     
     for sector, stocks in long_sectors.items():
         for ticker, vol_str, nlp, vol_surge, hist_win, score in stocks:
-            # 예: '+4.0% ~ +7.0%'의 중간값 5.5 추출
             v_min = float(vol_str.split('~')[0].strip().replace('+', '').replace('%', ''))
             v_max = float(vol_str.split('~')[1].strip().replace('+', '').replace('%', ''))
             data.append({'티커': ticker, '섹터': sector, '예측_방향': 'Long', '예측_변동폭(%)': (v_min + v_max) / 2})
             
     for sector, stocks in short_sectors.items():
         for ticker, vol_str, nlp, vol_surge, hist_win, score in stocks:
-            # 예: '-1.5% ~ -3.0%'의 중간값 -2.25 추출
             v_min = float(vol_str.split('~')[0].strip().replace('%', ''))
             v_max = float(vol_str.split('~')[1].strip().replace('%', ''))
             data.append({'티커': ticker, '섹터': sector, '예측_방향': 'Short', '예측_변동폭(%)': (v_min + v_max) / 2})
@@ -95,7 +92,6 @@ def get_flat_micro_predictions():
     return pd.DataFrame(data)
 
 def job_save_snapshot():
-    """KST 오후 10시에 자동으로 실행되어 데이터를 CSV에 저장"""
     df = get_flat_micro_predictions()
     now_kst = datetime.utcnow().replace(tzinfo=pytz.utc).astimezone(kst_tz)
     df['저장_일시'] = now_kst.strftime('%Y-%m-%d %H:%M:%S')
@@ -104,7 +100,6 @@ def job_save_snapshot():
 
 @st.cache_resource
 def run_scheduler_in_background():
-    """UI 블로킹 없이 백그라운드 스레드에서 스케줄러 구동"""
     def scheduler_loop():
         schedule.every().day.at("22:00", "Asia/Seoul").do(job_save_snapshot)
         while True:
@@ -133,7 +128,7 @@ def fetch_actual_performance(tickers):
     except Exception as e:
         return None
 
-# --- 5. 사이드바 UI (이미지 완벽 복원) ---
+# --- 5. 사이드바 UI ---
 st.sidebar.header("⚙️ 시스템 설정")
 st.sidebar.markdown(f"**KST:** {kst_time}")
 st.sidebar.markdown(f"**EDT:** {edt_time}")
@@ -144,18 +139,31 @@ weight_nlp = st.sidebar.slider("뉴스 감성 (NLP) 가중치", 0.0, 1.0, 0.5, 0
 weight_vol = st.sidebar.slider("프리마켓 거래량 가중치", 0.0, 1.0, 0.3, 0.1)
 weight_hist = st.sidebar.slider("과거 패턴 승률 가중치", 0.0, 1.0, 0.2, 0.1)
 
+# 시장 상황별 권장 가중치 비율 추가
+st.sidebar.markdown(
+    """
+    <div style='font-size: 0.85em; color: #a3aeb9; margin-top: 10px;'>
+    (💡 시장 국면별 권장 비율 [NLP : Vol : Hist])<br>
+    • 어닝/FOMC 주간 [0.6 : 0.3 : 0.1]<br>
+    • 비이벤트 횡보장 [0.3 : 0.4 : 0.3]<br>
+    • 극단적 공포장 [0.2 : 0.6 : 0.2]
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+
+st.sidebar.divider()
 st.sidebar.info("총합이 1.0이 되도록 조정하여 백테스팅 로직에 반영합니다.")
 st.sidebar.button("분석 모델 재실행 🔄")
 
 # --- 6. 메인 화면 구조 (Tab 분리) ---
 tab_predict, tab_track = st.tabs(["📊 Pre-Market Alpha Predictor v2", "🎯 Post-Market Tracker"])
 
-# ====== TAB 1: 예측 화면 (이미지 UI 완벽 복원) ======
+# ====== TAB 1: 예측 화면 ======
 with tab_predict:
     st.title("📊 Pre-Market Alpha Predictor v2")
     st.markdown("자연어 감성 점수, 프리마켓 자금 흐름, 과거 패턴 통계를 통합하여 개장 전 시장을 분석합니다.")
 
-    # 1. 거시 지표 예측
     st.header("1. 주요 지수 변동성 예측 (Macro View)")
     macro_df = get_macro_predictions()
 
@@ -171,7 +179,6 @@ with tab_predict:
         use_container_width=True
     )
 
-    # 2. 섹터 및 종목 예측
     st.header("2. 다중 지표 기반 주목 종목 (Micro View)")
     long_sectors, short_sectors = get_sector_predictions()
 
@@ -196,6 +203,11 @@ with tab_predict:
 # ====== TAB 2: 오차 검증 추적기 ======
 with tab_track:
     st.header("모델 오차 추적 및 교정 (Auto-Calibration)")
+    
+    # 임시 테스트용 스냅샷 생성 버튼 (필요 시 주석 해제하여 사용)
+    # if st.button("임시 데이터 스냅샷 지금 생성하기"):
+    #     job_save_snapshot()
+    #     st.success("데이터가 강제로 저장되었습니다. 새로고침(F5)을 누르시면 트래커가 작동합니다.")
     
     if os.path.exists(DATA_FILE):
         saved_df = pd.read_csv(DATA_FILE)
