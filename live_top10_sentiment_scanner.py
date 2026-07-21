@@ -15,7 +15,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 1. 페이지 기본 설정
 st.set_page_config(page_title="장중 퀀트 매트릭스", layout="wide")
-st.title("📈 실전용 장중 매도/보유 판별 시스템 (완전체 시각화)")
+st.title("📈 실전용 장중 매도/보유 판별 시스템 (커스텀 점수보드 탑재)")
 st.caption(f"시스템 실시간 동기화: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
 try:
@@ -28,19 +28,26 @@ except Exception as e:
 
 # --- 도구 함수: HTML 커스텀 메트릭 렌더러 (화살표 방향 및 점수 완벽 제어) ---
 def render_card(col, label, val_str, delta_text, arrow_type, color_type, score=None):
-    # 화살표 및 색상 통제 (상승=↑/빨강, 하락=↓/파랑, 중립=→/초록)
+    # 화살표 방향 및 색상 통제 (상승=↑/빨강, 하락=↓/파랑, 중립=→/초록)
     arrow_map = {'up': '↑', 'down': '↓', 'flat': '→'}
-    color_map = {'red': '🔴', 'blue': '🔵', 'green': '🟢', 'yellow': '🟡', 'white': '⚪'}
+    color_hex = {'red': '#ff4b4b', 'blue': '#0068c9', 'green': '#00e676', 'yellow': '#faca2b', 'white': '#d3d3d3'}
     
     a_char = arrow_map.get(arrow_type, '→')
-    c_char = color_map.get(color_type, '🟢')
+    c_hex = color_hex.get(color_type, '#00e676')
     
-    # 초록색 세부 점수 렌더링 (score가 부여된 항목만)
-    score_html = f"<br><span style='color: #00e676; font-size: 0.95rem; font-weight: bold;'>↳ {score:+.2f}점</span>" if score is not None else ""
-    
+    # 상단 Label 및 Value 출력 (기본 metric 활용하되 delta는 뺌)
     col.metric(label, val_str)
-    # st.metric의 기본 델타를 무시하고 직접 아래쪽에 HTML로 그려넣어 오류 원천 차단
-    col.markdown(f"<div style='margin-top: -15px; margin-bottom: 15px;'><span style='color: #b0b0b0; font-size: 0.9rem;'>{a_char} {c_char} {delta_text}</span>{score_html}</div>", unsafe_allow_html=True)
+    
+    # 옥토만경님의 요청: 초록색 세부 점수 렌더링 (score가 부여된 항목만)
+    if score is not None:
+        score_html = f"<div style='color: #00e676; font-size: 0.95rem; font-weight: bold; margin-top: 4px;'>↳ {score:+.2f}점</div>"
+    else:
+        score_html = ""
+        
+    # 화살표와 변화량을 합친 커스텀 HTML 주입
+    delta_html = f"<div style='color: {c_hex}; font-size: 1rem; font-weight: bold; margin-top: -15px;'>{a_char} {delta_text}</div>"
+    
+    col.markdown(delta_html + score_html, unsafe_allow_html=True)
 
 # 2. 한국투자증권 API 통신
 def get_kis_token_shared(force_new=False):
@@ -102,16 +109,15 @@ class KISApi:
         return 0, 0, 0
 
     def get_investor_trend(self, stock_code):
-        """[해결] 3중 다중 방어망으로 수급 0주 출력 원천 차단"""
+        """3중 다중 방어망으로 수급 0주 출력 원천 차단"""
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0"}
         
-        # 1단계 & 2단계: 네이버 PC버전 잠정치 및 확정치 정밀 스크래핑
         try:
             url_pc = f"https://finance.naver.com/item/frgn.naver?code={stock_code}"
             res_pc = requests.get(url_pc, headers=headers, timeout=5)
             res_pc.encoding = 'euc-kr'
             
-            # 1. 장중 잠정치 탈취
+            # 1. 장중 잠정치 우선 낚아채기
             prov_section = re.search(r'summary="외국인 기관 잠정치 추이"(.*?)</table', res_pc.text, re.DOTALL)
             if prov_section:
                 matches = re.findall(r'<td class="tc"><span[^>]*>(\d{2}:\d{2})</span></td>\s*<td class="num"><span[^>]*>([+\-\d,]+)</span></td>\s*<td class="num"><span[^>]*>([+\-\d,]+)</span></td>', prov_section.group(1))
@@ -121,7 +127,7 @@ class KISApi:
                     if f_qty != 0 or o_qty != 0:
                         return f_qty, o_qty, f"{m[0]} 잠정"
                         
-            # 2. 일자별 확정치 역추적
+            # 2. 잠정치가 없으면 일자별 확정치 역추적
             table_match = re.search(r'summary="외국인 기관 순매매 거래량"(.*?)</table', res_pc.text, re.DOTALL)
             if table_match:
                 rows = re.findall(r'<tr[^>]*>(.*?)</tr>', table_match.group(1), re.DOTALL)
@@ -137,7 +143,7 @@ class KISApi:
         except Exception:
             pass
             
-        # 3단계: 네이버 모바일 JSON API 최후의 보루
+        # 3. 최후의 보루: 네이버 모바일 JSON API
         try:
             url_m = f"https://m.stock.naver.com/api/stock/{stock_code}/investor/trend"
             res_m = requests.get(url_m, headers=headers, timeout=3)
@@ -229,6 +235,7 @@ def load_krx_symbols():
         df_tot = pd.concat([df_k, df_q])
         if not df_tot.empty: return dict(zip(df_tot['Name'], df_tot['Code']))
     except: pass
+    
     return {"삼성전자": "005930", "SK하이닉스": "000660", "삼성전기": "009150", "에코프로": "086520", "현대차": "005380"}
 
 # 4. 앱 화면 구성 및 종목 검색 UI 
@@ -304,12 +311,12 @@ if st.sidebar.button(f"🚀 [{stock_name}] 데이터 분석 실행", type="prima
         render_card(m_cols[1], "나스닥 선물", f"{nq_rate:,.1f}pt", f"{nq_change:+.2f}%", arr2, colr2, s_n)
         
         # 3. VIX
-        arr3 = "flat" if vix_rate < 25 else "down"
-        colr3 = "green" if vix_rate < 18 else "yellow" if vix_rate < 25 else "blue"
+        arr3 = "flat" if vix_rate < 25 else "up"
+        colr3 = "green" if vix_rate < 18 else "yellow" if vix_rate < 25 else "red"
         txt3 = "안정" if vix_rate < 18 else "경계" if vix_rate < 25 else "공포(발작)"
         render_card(m_cols[2], "VIX 공포 지수", f"{vix_rate:.2f}", txt3, arr3, colr3, s_vix)
         
-        # 4. 코스피 (점수 제외 항목)
+        # 4. 코스피 (점수 부여 대상이 아니므로 점수는 표기 생략)
         arr4, colr4 = ("up", "red") if kospi_change > 0 else ("down", "blue") if kospi_change < 0 else ("flat", "green")
         render_card(m_cols[3], "코스피 지수", f"{kospi_change:+.2f}% (실시간)", f"{kospi_change:+.2f}%", arr4, colr4, None)
 
@@ -351,14 +358,14 @@ if st.sidebar.button(f"🚀 [{stock_name}] 데이터 분석 실행", type="prima
         render_card(t_cols2[1], "20일 이동평균선", f"{ma20:,.0f}원", txt10, arr10, colr10, s_ma)
         
         # 11. 볼린저 밴드
-        if cur_price >= upper_bb: arr11, colr11, txt11 = "down", "blue", "상단 터치(과열)"
-        elif cur_price <= lower_bb: arr11, colr11, txt11 = "up", "red", "하단(반등대기)"
+        if cur_price >= upper_bb: arr11, colr11, txt11 = "up", "red", "상단 터치(과열)"
+        elif cur_price <= lower_bb: arr11, colr11, txt11 = "down", "blue", "하단(반등대기)"
         else: arr11, colr11, txt11 = "flat", "green", "밴드 내 안정"
         render_card(t_cols2[2], "볼린저 밴드 한계치", f"{upper_bb:,.0f}원 (상단)", txt11, arr11, colr11, s_bb)
         
         # 12. RSI
-        if rsi14 >= 70: arr12, colr12, txt12 = "down", "blue", "과매수(조정주의)"
-        elif rsi14 <= 30: arr12, colr12, txt12 = "up", "red", "과매도(반등기대)"
+        if rsi14 >= 70: arr12, colr12, txt12 = "up", "red", "과매수(조정주의)"
+        elif rsi14 <= 30: arr12, colr12, txt12 = "down", "blue", "과매도(반등기대)"
         else: arr12, colr12, txt12 = "flat", "green", "중립"
         render_card(t_cols2[3], "RSI (14일)", f"{rsi14:.1f}", txt12, arr12, colr12, s_rsi)
 
