@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import StandardScaler
+from scipy.stats import mannwhitneyu
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
@@ -116,7 +117,19 @@ def fetch_macro_data(years: int):
     else:
         df["Gold_Rel"] = np.nan
 
-    df = df.dropna()
+    # --- [수정] 순환논리 방지용 "미래(전방) 수익률" 컬럼 추가 ---
+    # 주의: 이 두 컬럼은 FEATURE_CANDIDATES에 절대 포함되지 않는다(모델 학습에는 전혀 쓰이지 않음).
+    # 오직 "국면 판독이 사후적으로 미래 수익률과 관련이 있는지"를 검증하는 용도로만 사용한다.
+    # Fwd_Ret_N(t) = (SPY[t+N] / SPY[t]) - 1  ->  N=5,20 거래일
+    df["Fwd_Ret_5"] = df["SPY"].shift(-5) / df["SPY"] - 1
+    df["Fwd_Ret_20"] = df["SPY"].shift(-20) / df["SPY"] - 1
+
+    # [수정] 기존에는 df.dropna()로 전체 컬럼 기준 결측치를 제거했는데,
+    # 이렇게 하면 Fwd_Ret_5/20이 계산 안 되는 최근 5~20거래일(가장 최신 데이터!)이
+    # 통째로 잘려나가 "오늘의 국면 판독"이 불가능해진다.
+    # 모델 학습/판독에 실제로 쓰이는 FEATURE_CANDIDATES 기준으로만 결측치를 제거하고,
+    # Fwd_Ret 컬럼의 결측치(최근 구간)는 그대로 남겨서 요약 통계에서만 자연히 제외되게 한다.
+    df = df.dropna(subset=FEATURE_CANDIDATES)
     return df
 
 
@@ -321,14 +334,82 @@ try:
 
     st.pyplot(fig)
 
-    with st.expander("🔎 국면별 통계 요약 보기"):
+    # --- [수정] 국면별 통계 요약: 순환논리(당일 Return) 대신 미래(D+5/D+20) 수익률 기반 검증 ---
+    with st.expander("🔎 국면별 통계 요약 보기 (사후 예측력 검증)"):
+        st.caption(
+            "⚠️ **읽는 법**: '당일 동시성 수익률'은 HMM이 국면을 나눌 때 실제로 사용한 값(Return) "
+            "그 자체이기 때문에, 국면별로 다르게 나오는 게 당연합니다(순환논리 — 예측력의 증거가 "
+            "될 수 없음). 실제 예측력 판단은 아래 '미래 5일/20일 수익률'을 보세요 — 이 값은 국면 "
+            "판독 시점 **이후**의, 모델이 학습 때 전혀 보지 못한 미래 데이터입니다."
+        )
+
         summary = analyzed_df.groupby("Regime").agg(
             일수=("SPY", "count"),
-            평균수익률=("Return", "mean"),
+            당일동시성수익률_참고용=("Return", "mean"),
             평균VIX=("VIX_Level", "mean"),
+            미래5일수익률=("Fwd_Ret_5", "mean"),
+            미래5일표본수=("Fwd_Ret_5", "count"),
+            미래20일수익률=("Fwd_Ret_20", "mean"),
+            미래20일표본수=("Fwd_Ret_20", "count"),
         )
         summary.index = [state_map[i][0] for i in summary.index]
-        st.dataframe(summary.style.format({"평균수익률": "{:.4%}", "평균VIX": "{:.2f}"}))
+        st.dataframe(summary.style.format({
+            "당일동시성수익률_참고용": "{:.4%}",
+            "평균VIX": "{:.2f}",
+            "미래5일수익률": "{:.4%}",
+            "미래20일수익률": "{:.4%}",
+        }))
+
+        st.markdown("##### 📐 국면별 예측력 유의성 검정 (Mann-Whitney U: 이 국면 vs 나머지 전체)")
+
+        sig_rows = []
+        for r in sorted(analyzed_df["Regime"].unique()):
+            label = state_map[r][0]
+            this_5 = analyzed_df.loc[analyzed_df["Regime"] == r, "Fwd_Ret_5"].dropna()
+            rest_5 = analyzed_df.loc[analyzed_df["Regime"] != r, "Fwd_Ret_5"].dropna()
+            this_20 = analyzed_df.loc[analyzed_df["Regime"] == r, "Fwd_Ret_20"].dropna()
+            rest_20 = analyzed_df.loc[analyzed_df["Regime"] != r, "Fwd_Ret_20"].dropna()
+
+            row = {"국면": label, "표본수(5일)": len(this_5), "표본수(20일)": len(this_20)}
+
+            if len(this_5) >= 5 and len(rest_5) >= 5:
+                try:
+                    _, p5 = mannwhitneyu(this_5, rest_5, alternative="two-sided")
+                    row["p-value(5일)"] = p5
+                except Exception:
+                    row["p-value(5일)"] = np.nan
+            else:
+                row["p-value(5일)"] = np.nan
+
+            if len(this_20) >= 5 and len(rest_20) >= 5:
+                try:
+                    _, p20 = mannwhitneyu(this_20, rest_20, alternative="two-sided")
+                    row["p-value(20일)"] = p20
+                except Exception:
+                    row["p-value(20일)"] = np.nan
+            else:
+                row["p-value(20일)"] = np.nan
+
+            sig_rows.append(row)
+
+        sig_df = pd.DataFrame(sig_rows).set_index("국면")
+
+        def _highlight_sig(val):
+            if pd.isna(val):
+                return ""
+            return "color: #16a34a; font-weight: 700;" if val < 0.05 else ""
+
+        st.dataframe(
+            sig_df.style.format({"p-value(5일)": "{:.4f}", "p-value(20일)": "{:.4f}"})
+                          .applymap(_highlight_sig, subset=["p-value(5일)", "p-value(20일)"])
+        )
+        st.caption(
+            "p-value < 0.05(초록 강조)면 그 국면의 미래 수익률 분포가 나머지 국면 전체와 통계적으로 "
+            "유의미하게 다르다는 뜻입니다. 표본수가 적은 국면(특히 롤링 윈도우를 짧게 잡거나 국면 개수를 "
+            "늘렸을 때)은 검정력이 낮아 유의성이 잘 안 나올 수 있으니 표본수 컬럼을 함께 확인하세요. "
+            "또한 국면 개수(n_states)를 조정할 때마다 결과가 크게 흔들린다면, 그 자체가 국면 구분의 "
+            "안정성이 낮다는 신호입니다."
+        )
 
     if is_walkforward:
         st.info("""
@@ -336,6 +417,7 @@ try:
         직전 컨텍스트 구간까지의 정보만 사용합니다. 즉 차트상 과거 어떤 날짜의 색상도 그 날짜 이후의 데이터로부터
         영향을 받지 않습니다 (look-ahead bias 제거). 실전 매매 판단에 참고하기에 적합한 모드입니다.
         단, 재학습 주기·윈도우 길이·컨텍스트 길이 설정에 따라 결과가 달라질 수 있으니 여러 설정으로 민감도를 확인해보세요.
+        국면 판독 자체의 신뢰도는 위 '국면별 통계 요약'의 미래(D+5/D+20) 수익률 유의성 검정으로 확인하십시오.
         """)
     else:
         st.info("""
