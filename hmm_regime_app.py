@@ -21,7 +21,8 @@ LABELS = ["🟢 상승/안정 국면 (Safe)", "🟡 변동성 확대 (Caution)",
 # --- 사이드바 설정 ---
 with st.sidebar:
     st.header("⚙️ 모델 설정")
-    lookback_years = st.slider("데이터 수집 기간 (년)", min_value=5, max_value=15, value=10)
+    # [최적화] 기본값 10->7년: 데이터 길이가 재학습 96회 각각의 학습 데이터 크기에 직결됨
+    lookback_years = st.slider("데이터 수집 기간 (년)", min_value=5, max_value=15, value=7)
     n_states = st.slider("국면(Regime) 개수", min_value=2, max_value=4, value=3)
 
     st.divider()
@@ -35,9 +36,11 @@ with st.sidebar:
 
     if is_walkforward:
         st.caption("매 재학습 시점까지의 데이터만 사용하여, 과거 판독 결과에 미래 정보가 섞이지 않습니다.")
+        # [최적화] 기본값 21->63: 재학습 횟수가 4.5배 이상 줄어듦(약 96회 -> 약 20회대).
+        # 국면 판독의 민감도가 떨어지는 대신, 최초 실행 시 CPU 부하가 크게 줄어듦.
         retrain_freq = st.select_slider(
             "재학습 주기 (거래일)", options=[5, 10, 21, 63, 126],
-            value=21, help="21=약 1개월, 63=약 1분기, 126=약 반기"
+            value=63, help="21=약 1개월, 63=약 1분기, 126=약 반기"
         )
         window_mode = st.radio("학습 윈도우", ["롤링(최근 N년)", "확장(전체 누적)"], index=0)
         window_years = None
@@ -155,7 +158,9 @@ def fit_hmm_insample(df: pd.DataFrame, n_components: int):
     scaler = StandardScaler()
     X = scaler.fit_transform(X_raw)
 
-    model = GaussianHMM(n_components=n_components, covariance_type="full",
+    # [최적화] "full"->"diag": in-sample 모드는 1회만 학습하니 원래도 가볍지만,
+    # 두 모드의 국면 정의 방식을 일치시켜야 in-sample vs 워크포워드 비교가 의미 있음
+    model = GaussianHMM(n_components=n_components, covariance_type="diag",
                          n_iter=1000, random_state=42, tol=1e-4)
     model.fit(X)
     converged = model.monitor_.converged
@@ -205,8 +210,12 @@ def fit_hmm_walkforward(df: pd.DataFrame, n_components: int, retrain_freq: int,
             try:
                 scaler = StandardScaler().fit(train_data)
                 Xs_train = scaler.transform(train_data)
-                candidate = GaussianHMM(n_components=n_components, covariance_type="full",
-                                         n_iter=100, random_state=42, tol=1e-3)
+                # [최적화] covariance_type "full"->"diag": 6개 피처 간 완전 공분산 행렬을
+                # 96회 재학습마다 반복 역산하는 게 CPU 사용의 가장 큰 비중을 차지했음.
+                # diag는 피처 간 상관은 반영 못 하지만 연산량이 훨씬 가벼움.
+                # n_iter도 100->50으로 낮춤: tol=1e-3 기준으로는 대부분 그 전에 수렴함.
+                candidate = GaussianHMM(n_components=n_components, covariance_type="diag",
+                                         n_iter=50, random_state=42, tol=1e-3)
                 candidate.fit(Xs_train)
 
                 # 학습 데이터 내에서의 VIX 평균 기준 rank 매핑 (재학습마다 임의번호를 일관 의미로 재정렬)
