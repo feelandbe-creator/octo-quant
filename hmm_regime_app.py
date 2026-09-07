@@ -193,7 +193,12 @@ def fit_hmm_insample(df: pd.DataFrame, n_components: int):
     rank_of_raw = {raw: rank for rank, raw in enumerate(np.argsort(mean_vix))}
     df["Regime"] = [rank_of_raw[s] for s in raw_states]
 
-    return df, feature_cols, converged, 1, 1
+    # [추가] 마지막 날(오늘)의 국면 판정 확신도(posterior probability).
+    # 참고용 조언 문구를 국면 라벨뿐 아니라 "얼마나 확신하는 판정인지"로도 나누기 위함.
+    proba = model.predict_proba(X)
+    last_confidence = float(proba[-1, raw_states[-1]])
+
+    return df, feature_cols, converged, 1, 1, last_confidence
 
 
 # --- 2-B. 워크포워드 (실전용, look-ahead 없음) ---
@@ -213,6 +218,7 @@ def fit_hmm_walkforward(df: pd.DataFrame, n_components: int, retrain_freq: int,
     rank_of_raw = None
     last_retrain = -10**9
     train_start = 0
+    last_confidence = None
 
     progress = st.progress(0, text="워크포워드 재학습 진행 중...")
 
@@ -265,6 +271,10 @@ def fit_hmm_walkforward(df: pd.DataFrame, n_components: int, retrain_freq: int,
             decoded = model.predict(Xs_ctx)
             raw_today = decoded[-1]
             regimes[t] = rank_of_raw.get(raw_today, 0)
+            # [추가] 마지막 거래일(오늘)에 한해서만 확신도 계산 - 매일 계산하면 불필요한 연산.
+            if t == T - 1:
+                proba_ctx = model.predict_proba(Xs_ctx)
+                last_confidence = float(proba_ctx[-1, raw_today])
         except Exception:
             regimes[t] = regimes[t - 1] if t > 0 else 0
 
@@ -275,7 +285,7 @@ def fit_hmm_walkforward(df: pd.DataFrame, n_components: int, retrain_freq: int,
     df = df.iloc[min_train_days:]  # 워밍업 구간(모델 없음) 제외
     df = df[df["Regime"] >= 0]
 
-    return df, feature_cols, n_fail, n_fit, min_train_days
+    return df, feature_cols, n_fail, n_fit, min_train_days, last_confidence
 
 
 # --- 3. 메인 로직 및 화면 출력 ---
@@ -291,7 +301,7 @@ try:
             st.error("데이터 기간이 워크포워드 워밍업 기간보다 짧습니다. 데이터 수집 기간을 늘리거나 워밍업 기간을 줄여주세요.")
             st.stop()
 
-        analyzed_df, used_features, n_fail, n_fit, warmup = fit_hmm_walkforward(
+        analyzed_df, used_features, n_fail, n_fit, warmup, current_confidence = fit_hmm_walkforward(
             macro_df, n_states, retrain_freq, min_train_days, window_days, decode_context
         )
         state_map = build_state_map(n_states)
@@ -299,7 +309,7 @@ try:
         st.caption(f"워크포워드: 총 {n_fit}회 재학습 수행 (워밍업 {warmup}거래일 제외 후 시작)"
                    + (f", 실패 {n_fail}건은 직전 모델로 대체" if n_fail else ""))
     else:
-        analyzed_df, used_features, converged, n_fit, warmup = fit_hmm_insample(macro_df, n_states)
+        analyzed_df, used_features, converged, n_fit, warmup, current_confidence = fit_hmm_insample(macro_df, n_states)
         state_map = build_state_map(n_states)
         if not converged:
             st.warning("⚠️ HMM 모델이 완전히 수렴하지 않았습니다. 결과 해석에 참고하세요.")
@@ -329,6 +339,76 @@ try:
     <div style="padding: 20px; border-radius: 10px; background-color: {current_state_info[1]}; color: white; text-align: center;">
         <h2 style="margin: 0;">현재 AI 판독 국면: {current_state_info[0]}</h2>
         <p style="margin-top: 10px; font-size: 16px;">모드: {mode} · 사용된 피처: {', '.join(used_features)}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- [추가] 확신도(posterior probability) 기반 참고용 대응 문구 ---
+    # 주의: 이건 매매를 자동 실행하는 신호가 아니라, 사람이 판단 전에 한 번 더 확인하라는
+    # 참고용 조언입니다. "Danger=매수/매도"식 자동 실행 로직으로 연결하지 마세요.
+    is_safest = (current_state_idx == 0)
+    is_most_dangerous = (current_state_idx == n_states - 1)
+    conf_pct = current_confidence * 100 if current_confidence is not None else None
+
+    if conf_pct is None:
+        advisory_title = "ℹ️ 확신도 정보 없음"
+        advisory_body = "이번 실행에서는 확신도를 계산하지 못했습니다. 국면 라벨만 참고하세요."
+        advisory_color = "#6B7280"
+    elif is_safest:
+        if conf_pct >= 80:
+            advisory_title = f"🟢 안정 국면 · 확신도 {conf_pct:.0f}% (높음)"
+            advisory_body = (
+                "다만 이 모델은 후행지표입니다 — 실제 위기 발생 직전까지도 '안정'으로 판정된 사례가 "
+                "과거 검증에서 여러 번 확인됐습니다(2020년 코로나 직전 등). 이 라벨을 근거로 포지션을 "
+                "새로 확대하거나 손절선을 완화하지 말고, 기존 리스크 관리 기준을 그대로 유지하세요."
+            )
+        elif conf_pct >= 60:
+            advisory_title = f"🟢 안정 국면 · 확신도 {conf_pct:.0f}% (중간)"
+            advisory_body = (
+                "국면 전환 초입 단계일 가능성이 있습니다. VIX·신용스프레드 등 원지표를 평소보다 한 번 "
+                "더 직접 확인하고, 이 라벨만으로 안심하는 판단은 피하세요."
+            )
+        else:
+            advisory_title = f"🟢 안정 국면 · 확신도 {conf_pct:.0f}% (낮음 — 사실상 경계선)"
+            advisory_body = (
+                "국면 판정 자체가 애매한 경계 구간입니다. 이 라벨을 어떤 결정의 근거로도 쓰지 말고, "
+                "다른 지표(가격·거래량 추세 등)를 우선하세요."
+            )
+    elif is_most_dangerous:
+        if conf_pct >= 80:
+            advisory_title = f"🔴 위험 국면 · 확신도 {conf_pct:.0f}% (높음)"
+            advisory_body = (
+                "과거 검증에서는 이 국면 진입 후 20일 수익률이 평균적으로 나쁘지 않았습니다(변동성 "
+                "평균회귀 경향, 통계적 근거는 중간~중상 수준). 그렇다고 매수 신호로 해석하진 마시고, "
+                "다만 이 라벨만 보고 기계적으로 전량 매도하는 성급한 반응은 한 번 더 재검토해보세요."
+            )
+        elif conf_pct >= 60:
+            advisory_title = f"🔴 위험 국면 · 확신도 {conf_pct:.0f}% (중간)"
+            advisory_body = (
+                "위험 신호가 나왔지만 확신도가 완전하지 않습니다. 리스크 관리 강화는 유효하나, "
+                "과잉 대응(급격한 비중 축소 등)은 자제하세요."
+            )
+        else:
+            advisory_title = f"🔴 위험 국면 · 확신도 {conf_pct:.0f}% (낮음 — 사실상 경계선)"
+            advisory_body = (
+                "국면 판정 자체가 애매한 경계 구간입니다. 이 라벨 하나로 성급한 매도 판단을 내리지 "
+                "말고, 다른 지표를 함께 확인하세요."
+            )
+    else:
+        advisory_title = f"🟡 중간 국면 · 확신도 {conf_pct:.0f}%"
+        advisory_body = (
+            "과거 교차검증에서 중간 국면(Caution/Warning)은 롤링·확장 설정에 따라 유의성이 흔들리는 "
+            "구간으로 확인됐습니다. 참고 정도로만 보고, 이 라벨에 큰 의미를 두지 마세요."
+        )
+
+    st.markdown(f"""
+    <div style="padding: 15px 20px; border-radius: 10px; background-color: rgba(255,255,255,0.04);
+                border-left: 4px solid {advisory_color if conf_pct is None else current_state_info[1]};
+                margin-top: 10px;">
+        <p style="margin: 0; font-weight: 700; font-size: 15px;">{advisory_title}</p>
+        <p style="margin-top: 8px; font-size: 14px; color: #9CA3AF; line-height: 1.6;">{advisory_body}</p>
+        <p style="margin-top: 8px; font-size: 12px; color: #6B7280;">
+            ※ 이 문구는 참고용 조언이며 자동 매매 신호가 아닙니다. 최종 판단은 직접 하세요.
+        </p>
     </div>
     """, unsafe_allow_html=True)
 
