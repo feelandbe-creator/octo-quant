@@ -794,7 +794,9 @@ else:
     )
     wf_col1, wf_col2 = st.columns(2)
     with wf_col1:
-        n_test_points = st.selectbox("검증 시점 개수", options=[10, 15, 20, 30], index=1)
+        n_test_points = st.selectbox("검증 시점 개수", options=[10, 15, 20, 30, 50, 80], index=1)
+        if n_test_points >= 50:
+            st.caption(f"⏱️ {n_test_points}개 시점은 계산량이 많아 1~3분 이상 걸릴 수 있습니다.")
     with wf_col2:
         pool_cap = st.selectbox("탐색 풀 크기 (최근 N거래일, 클수록 느려짐)", options=[500, 800, 1200, 1500], index=1)
 
