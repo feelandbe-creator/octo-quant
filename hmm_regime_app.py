@@ -356,18 +356,27 @@ try:
             일수=("SPY", "count"),
             당일동시성수익률_참고용=("Return", "mean"),
             평균VIX=("VIX_Level", "mean"),
-            미래5일수익률=("Fwd_Ret_5", "mean"),
+            미래5일평균=("Fwd_Ret_5", "mean"),
             미래5일표본수=("Fwd_Ret_5", "count"),
-            미래20일수익률=("Fwd_Ret_20", "mean"),
+            미래20일평균=("Fwd_Ret_20", "mean"),
+            미래20일중앙값=("Fwd_Ret_20", "median"),
+            미래20일최솟값=("Fwd_Ret_20", "min"),
             미래20일표본수=("Fwd_Ret_20", "count"),
         )
         summary.index = [state_map[i][0] for i in summary.index]
         st.dataframe(summary.style.format({
             "당일동시성수익률_참고용": "{:.4%}",
             "평균VIX": "{:.2f}",
-            "미래5일수익률": "{:.4%}",
-            "미래20일수익률": "{:.4%}",
+            "미래5일평균": "{:.4%}",
+            "미래20일평균": "{:.4%}",
+            "미래20일중앙값": "{:.4%}",
+            "미래20일최솟값": "{:.4%}",
         }))
+        st.caption(
+            "💡 **평균만 보지 마세요**: '미래20일최솟값'이 크게 마이너스인데 '미래20일평균'이 플러스라면, "
+            "그 국면은 대체로는 무난하다가 가끔 크게 오르는 게 아니라 '가끔 크게 오르는 소수의 사건이 "
+            "평균을 끌어올린' 구조일 수 있습니다. 중앙값이 평균보다 훨씬 낮다면 특히 의심해 보세요."
+        )
 
         st.markdown("##### 📐 국면별 예측력 유의성 검정 (Mann-Whitney U: 이 국면 vs 나머지 전체)")
 
@@ -419,6 +428,104 @@ try:
             "또한 국면 개수(n_states)를 조정할 때마다 결과가 크게 흔들린다면, 그 자체가 국면 구분의 "
             "안정성이 낮다는 신호입니다."
         )
+
+        # --- [추가] 위기 구간별 분해: 전체기간 검정 결과가 특정 사건 하나에 쏠린 게 아닌지 확인 ---
+        st.markdown("##### 🗓️ 주요 위기 구간별 국면 분해 (한 사건에 결과가 쏠려 있는지 확인)")
+        st.caption(
+            "위 전체기간 검정이 유의미해도, 그게 사실은 2020년 코로나 반등 한 번 같은 단일 사건이 "
+            "통계를 지배한 결과일 수 있습니다. 아래 세 위기 구간 각각에서 국면별 미래 20일 수익률이 "
+            "실제로 비슷한 방향으로 나오는지 개별 확인하세요. 세 구간에서 결과가 들쭉날쭉하다면 "
+            "'일반적으로 성립하는 패턴'이 아니라 '특정 사건에 대한 우연한 적합'일 가능성이 있습니다."
+        )
+
+        EVENT_WINDOWS = {
+            "2018년 4분기 조정": ("2018-10-01", "2018-12-31"),
+            "2020년 코로나 폭락": ("2020-02-15", "2020-04-30"),
+            "2022년 약세장": ("2022-01-01", "2022-10-31"),
+        }
+
+        event_rows = []
+        for event_name, (ev_start, ev_end) in EVENT_WINDOWS.items():
+            mask = (analyzed_df.index >= ev_start) & (analyzed_df.index <= ev_end)
+            ev_df = analyzed_df.loc[mask]
+            if ev_df.empty:
+                event_rows.append({
+                    "사건": event_name, "국면": "(데이터 없음 — 데이터 수집기간/롤링윈도우 범위 밖)",
+                    "표본수": 0, "평균": np.nan, "중앙값": np.nan, "최솟값": np.nan,
+                })
+                continue
+            for r in sorted(ev_df["Regime"].unique()):
+                vals = ev_df.loc[ev_df["Regime"] == r, "Fwd_Ret_20"].dropna()
+                if len(vals) == 0:
+                    continue
+                event_rows.append({
+                    "사건": event_name,
+                    "국면": state_map[r][0],
+                    "표본수": len(vals),
+                    "평균": vals.mean(),
+                    "중앙값": vals.median(),
+                    "최솟값": vals.min(),
+                })
+
+        event_df = pd.DataFrame(event_rows)
+        if not event_df.empty:
+            st.dataframe(
+                event_df.set_index(["사건", "국면"]).style.format(
+                    {"평균": "{:.2%}", "중앙값": "{:.2%}", "최솟값": "{:.2%}"}, na_rep="—"
+                )
+            )
+
+        # --- [추가] 롤링 vs 확장 교차검증: 같은 설정으로 window_mode만 바꿔 재실행하면 자동 비교 ---
+        # 주의: window_years/retrain_freq/min_train_years/decode_context는 워크포워드 모드에서만
+        # 존재하는 설정이므로, 일괄학습(in-sample) 모드에서는 이 섹션 자체를 건너뛴다.
+        if is_walkforward:
+            st.markdown("##### 🔁 롤링 vs 확장 윈도우 교차검증")
+            if "regime_validation_cache" not in st.session_state:
+                st.session_state["regime_validation_cache"] = {}
+
+            current_mode_label = "롤링" if window_years is not None else "확장"
+            cfg_sig = (n_states, retrain_freq, min_train_years, decode_context, lookback_years)
+            st.session_state["regime_validation_cache"][(current_mode_label, cfg_sig)] = {
+                "summary": summary.copy(),
+                "sig_df": sig_df.copy(),
+            }
+
+            other_mode_label = "확장" if current_mode_label == "롤링" else "롤링"
+            other_key = (other_mode_label, cfg_sig)
+
+            if other_key in st.session_state["regime_validation_cache"]:
+                prev = st.session_state["regime_validation_cache"][other_key]
+                cur_tbl = pd.DataFrame({
+                    f"{current_mode_label}_미래20일평균": summary["미래20일평균"],
+                    f"{current_mode_label}_p값(20일)": sig_df["p-value(20일)"],
+                })
+                prev_tbl = pd.DataFrame({
+                    f"{other_mode_label}_미래20일평균": prev["summary"]["미래20일평균"],
+                    f"{other_mode_label}_p값(20일)": prev["sig_df"]["p-value(20일)"],
+                })
+                compare_df = cur_tbl.join(prev_tbl, how="outer")
+                st.dataframe(compare_df.style.format({
+                    f"{current_mode_label}_미래20일평균": "{:.2%}",
+                    f"{other_mode_label}_미래20일평균": "{:.2%}",
+                    f"{current_mode_label}_p값(20일)": "{:.4f}",
+                    f"{other_mode_label}_p값(20일)": "{:.4f}",
+                }, na_rep="—"))
+                st.caption(
+                    "두 윈도우 방식(롤링/확장)에서 국면별 방향(+/-)과 유의성이 같은 패턴으로 나오면, "
+                    "결과가 특정 윈도우 설정에 좌우되지 않는 안정적인 신호라는 뜻입니다. 부호가 뒤집히거나 "
+                    "한쪽에서만 유의하다면 윈도우 설정에 결과가 민감하다는 신호이니 신뢰도를 낮춰 보십시오."
+                )
+            else:
+                st.info(
+                    f"현재는 '{current_mode_label}' 결과만 있습니다. 사이드바에서 '학습 윈도우'를 "
+                    f"'{other_mode_label}'(으)로 바꿔 같은 설정으로 한 번 더 실행하면, 이 자리에 자동으로 "
+                    f"두 결과가 나란히 비교되어 나타납니다."
+                )
+        else:
+            st.caption(
+                "ℹ️ 롤링/확장 윈도우 교차검증은 워크포워드 모드에서만 제공됩니다. "
+                "사이드바에서 '판독 모드'를 '워크포워드'로 바꿔 확인하세요."
+            )
 
     if is_walkforward:
         st.info("""
