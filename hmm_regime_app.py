@@ -16,8 +16,51 @@ except ImportError:
 
 # 페이지 기본 설정
 st.set_page_config(page_title="Wall St. HMM Regime Engine", layout="wide")
-st.title("🛡️ Wall Street HMM Regime Switching Model (V4 워크포워드)")
-st.caption(f"판독 기준 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (KST)")
+
+# --- [추가] 상단 타이틀 + 우측 매뉴얼 버튼 ---
+title_col, manual_col = st.columns([6, 1])
+with title_col:
+    st.title("🛡️ Wall Street HMM Regime Switching Model (V4 워크포워드)")
+    st.caption(f"판독 기준 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (KST)")
+with manual_col:
+    st.write("")  # 타이틀과 수직 정렬 맞추기용 여백
+    with st.popover("📖 사용 설명서", use_container_width=True):
+        st.markdown("""
+### 이 앱의 목적
+미국 증시(S&P500) 관련 6개 거시지표(수익률·VIX·금리차분·장단기금리차·신용스프레드·금 상대수익률)를
+HMM(은닉마르코프모델)에 학습시켜, 현재 시장이 "안정" 국면인지 "위험" 국면인지 판독합니다.
+
+**⚠️ 이 앱은 자동 매매 신호가 아닙니다.** 검증 결과, 국면 판정이 미래 수익률과 통계적으로
+약~중간 강도로 연관되어 있다는 근거는 있지만, 단독으로 매수·매도를 결정할 만큼 강력하지
+않습니다. 다른 매매 판단(예: 리스크 통제 센터, 손절/익절 로직)을 내리기 **전에 한 번 더
+참고하는 방어적 지표(범퍼)**로 활용하는 것을 권장합니다.
+
+### 사이드바 사용법
+- **데이터 수집 기간**: 학습에 사용할 과거 데이터 길이(년). 길수록 2008년 금융위기 같은
+  장기 약세장까지 포함되어 검증이 더 엄밀해지지만, 계산 시간이 늘어납니다.
+- **국면(Regime) 개수**: 기본값 2(안정/위험)를 권장합니다. 교차검증 결과 중간 국면은
+  판정이 불안정했습니다.
+- **판독 모드**: '워크포워드'가 실전용입니다(미래 데이터를 절대 참조하지 않음). '일괄학습'은
+  설명/비교 참고용이며 낙관적으로 보일 수 있습니다.
+- **재학습 주기 / 학습 윈도우 / 워밍업 기간 / 디코딩 컨텍스트**: 워크포워드 모드의 세부
+  설정입니다. 값을 바꾼 뒤에는 반드시 **"🚀 설정 적용 및 실행"** 버튼을 눌러야 반영됩니다.
+
+### 결과 화면 읽는 법
+- **현재 AI 판독 국면 박스**: 오늘의 국면과, 그 판정에 대한 모델의 확신도(%)에 따라
+  달라지는 참고용 대응 문구가 함께 표시됩니다. 문구 아래 6칸 표에서 지금 어느 칸에
+  해당하는지 색으로 강조됩니다.
+- **국면별 통계 요약 (사후 예측력 검증)**: 이 국면 판정이 실제로 미래 수익률과 유의미하게
+  연관되는지를 여러 통계적 방법(Mann-Whitney U 검정, 독립표본 재검정, 다중 시작점 검정,
+  Newey-West HAC 보정 검정)으로 교차 확인한 결과입니다. 방법마다 결론이 다를 수 있으니
+  여러 검정을 함께 보고 신중하게 판단하세요.
+
+### 알려진 한계
+- HMM은 후행지표라, 위기 발생 직전까지도 "안정"으로 판정하는 경우가 있었습니다.
+- "위험 국면이 안정 국면보다 미래수익률이 낫다"는 패턴이 검증됐지만, 이는 변동성
+  평균회귀라는 잘 알려진 현상에 가깝고 강력한 알파는 아닙니다.
+- 재학습 주기를 길게 잡을수록(연산 부담은 줄지만) 국면 전환 반응이 최대 그 기간만큼
+  늦어질 수 있습니다.
+""")
 
 FEATURE_CANDIDATES = ["Return", "VIX_Level", "TNX_Diff", "Yield_Curve", "Credit_Stress", "Gold_Rel"]
 
@@ -38,41 +81,82 @@ LABEL_SETS = {
 }
 
 # --- 사이드바 설정 ---
+# [수정] st.form으로 감싸서, 슬라이더를 여러 개 바꿔도 즉시 재실행되지 않고
+# "적용 및 실행" 버튼을 눌러야 한 번에 반영되도록 변경.
 with st.sidebar:
     st.header("⚙️ 모델 설정")
-    # [최적화] 기본값 10->7년: 데이터 길이가 재학습 96회 각각의 학습 데이터 크기에 직결됨
-    lookback_years = st.slider("데이터 수집 기간 (년)", min_value=5, max_value=15, value=7)
-    # [수정] 기본값 3->2: 교차검증 결과 중간 국면(Caution)이 롤링/확장에 따라 유의성이
-    # 왔다갔다했고, 극단 2개(Safe/Danger)만 두 방식 모두에서 견고하게 유의했음.
-    n_states = st.slider("국면(Regime) 개수", min_value=2, max_value=4, value=2)
-    if n_states == 2:
-        st.caption("💡 2국면(안정/위험)을 기본 권장합니다 — 교차검증에서 가장 견고했던 조합입니다.")
 
-    st.divider()
-    st.header("🧪 학습 방식")
-    mode = st.radio(
-        "판독 모드 선택",
-        ["워크포워드 (실전용, 미래참조 없음)", "전체기간 일괄학습 (설명/참고용, in-sample)"],
-        index=0,
-    )
-    is_walkforward = mode.startswith("워크포워드")
+    with st.form("settings_form"):
+        # [최적화] 기본값 10->7년: 데이터 길이가 재학습 96회 각각의 학습 데이터 크기에 직결됨
+        lookback_years_input = st.slider("데이터 수집 기간 (년)", min_value=5, max_value=15, value=7)
+        # [수정] 기본값 3->2: 교차검증 결과 중간 국면(Caution)이 롤링/확장에 따라 유의성이
+        # 왔다갔다했고, 극단 2개(Safe/Danger)만 두 방식 모두에서 견고하게 유의했음.
+        n_states_input = st.slider("국면(Regime) 개수", min_value=2, max_value=4, value=2)
+        if n_states_input == 2:
+            st.caption("💡 2국면(안정/위험)을 기본 권장합니다 — 교차검증에서 가장 견고했던 조합입니다.")
 
-    if is_walkforward:
-        st.caption("매 재학습 시점까지의 데이터만 사용하여, 과거 판독 결과에 미래 정보가 섞이지 않습니다.")
-        # [최적화] 기본값 21->63: 재학습 횟수가 4.5배 이상 줄어듦(약 96회 -> 약 20회대).
-        # 국면 판독의 민감도가 떨어지는 대신, 최초 실행 시 CPU 부하가 크게 줄어듦.
-        retrain_freq = st.select_slider(
-            "재학습 주기 (거래일)", options=[5, 10, 21, 63, 126],
-            value=63, help="21=약 1개월, 63=약 1분기, 126=약 반기"
+        st.divider()
+        st.subheader("🧪 학습 방식")
+        mode_input = st.radio(
+            "판독 모드 선택",
+            ["워크포워드 (실전용, 미래참조 없음)", "전체기간 일괄학습 (설명/참고용, in-sample)"],
+            index=0,
         )
-        window_mode = st.radio("학습 윈도우", ["롤링(최근 N년)", "확장(전체 누적)"], index=0)
-        window_years = None
-        if window_mode.startswith("롤링"):
-            window_years = st.slider("롤링 윈도우 (년)", min_value=2, max_value=10, value=5)
-        min_train_years = st.slider("최소 워밍업 기간 (년)", min_value=1, max_value=5, value=2)
-        decode_context = st.slider("디코딩 컨텍스트 (거래일)", min_value=30, max_value=252, value=120,
-                                    help="당일 국면 판정 시 참고하는 직전 데이터 길이. 미래 데이터는 절대 포함되지 않습니다.")
-        st.warning("⏱️ 워크포워드 모드는 여러 번 재학습을 반복하므로 첫 로딩에 다소 시간이 걸릴 수 있습니다.")
+        is_walkforward_input = mode_input.startswith("워크포워드")
+
+        # 워크포워드 전용 세부설정 - 미리 None으로 초기화(일괄학습 모드에서는 미사용)
+        retrain_freq_input = None
+        window_mode_input = None
+        window_years_input = None
+        min_train_years_input = None
+        decode_context_input = None
+
+        if is_walkforward_input:
+            st.caption("매 재학습 시점까지의 데이터만 사용하여, 과거 판독 결과에 미래 정보가 섞이지 않습니다.")
+            # [최적화] 기본값 21->63: 재학습 횟수가 4.5배 이상 줄어듦(약 96회 -> 약 20회대).
+            retrain_freq_input = st.select_slider(
+                "재학습 주기 (거래일)", options=[5, 10, 21, 63, 126],
+                value=63, help="21=약 1개월, 63=약 1분기, 126=약 반기"
+            )
+            window_mode_input = st.radio("학습 윈도우", ["롤링(최근 N년)", "확장(전체 누적)"], index=0)
+            if window_mode_input.startswith("롤링"):
+                window_years_input = st.slider("롤링 윈도우 (년)", min_value=2, max_value=10, value=5)
+            min_train_years_input = st.slider("최소 워밍업 기간 (년)", min_value=1, max_value=5, value=2)
+            decode_context_input = st.slider(
+                "디코딩 컨텍스트 (거래일)", min_value=30, max_value=252, value=120,
+                help="당일 국면 판정 시 참고하는 직전 데이터 길이. 미래 데이터는 절대 포함되지 않습니다."
+            )
+            st.warning("⏱️ 워크포워드 모드는 여러 번 재학습을 반복하므로 첫 로딩에 다소 시간이 걸릴 수 있습니다.")
+
+        st.divider()
+        submitted = st.form_submit_button(
+            "🚀 설정 적용 및 실행", use_container_width=True, type="primary"
+        )
+        st.caption("여러 슬라이더를 한꺼번에 바꾼 뒤 이 버튼을 눌러야 반영됩니다.")
+
+    # [추가] 제출된 설정을 session_state에 저장 - 최초 로드 시에는 기본값으로 1회 자동 실행
+    if submitted or "applied_settings" not in st.session_state:
+        st.session_state["applied_settings"] = {
+            "lookback_years": lookback_years_input,
+            "n_states": n_states_input,
+            "mode": mode_input,
+            "is_walkforward": is_walkforward_input,
+            "retrain_freq": retrain_freq_input,
+            "window_years": window_years_input,
+            "min_train_years": min_train_years_input,
+            "decode_context": decode_context_input,
+        }
+
+# 이후 코드는 기존과 동일한 변수명을 그대로 사용 - "적용된" 설정값에서 꺼내온다
+_settings = st.session_state["applied_settings"]
+lookback_years = _settings["lookback_years"]
+n_states = _settings["n_states"]
+mode = _settings["mode"]
+is_walkforward = _settings["is_walkforward"]
+retrain_freq = _settings["retrain_freq"]
+window_years = _settings["window_years"]
+min_train_years = _settings["min_train_years"]
+decode_context = _settings["decode_context"]
 
 
 # --- 1. 데이터 수집 함수 (SPY, VIX, TNX, IRX, 신용스프레드, 달러 통합 수집) ---
@@ -409,6 +493,59 @@ try:
         <p style="margin-top: 8px; font-size: 12px; color: #6B7280;">
             ※ 이 문구는 참고용 조언이며 자동 매매 신호가 아닙니다. 최종 판단은 직접 하세요.
         </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- [추가] 국면 x 확신도 대응표(한눈에 보기) - 현재 해당 칸을 색으로 강조 ---
+    _tiers = [("높음 (≥80%)", "high"), ("중간 (60~80%)", "medium"), ("낮음 (<60%)", "low")]
+
+    if conf_pct is None:
+        _current_tier = None
+    elif conf_pct >= 80:
+        _current_tier = "high"
+    elif conf_pct >= 60:
+        _current_tier = "medium"
+    else:
+        _current_tier = "low"
+
+    _short_texts = {
+        0: {  # 안정(가장 낮은 랭크)
+            "high": "방심 금지 · 리스크 유지",
+            "medium": "전환초입 가능성 · 재확인",
+            "low": "경계선 · 판단 보류",
+        },
+        n_states - 1: {  # 위험(가장 높은 랭크)
+            "high": "반등 잦음(통계) · 매도재검토",
+            "medium": "관리강화 · 과잉대응 자제",
+            "low": "경계선 · 성급판단 금지",
+        },
+    }
+
+    def _cell_html(regime_rank, tier_key):
+        text = _short_texts.get(regime_rank, {}).get(tier_key, "불안정 구간 · 참고용")
+        is_current = (regime_rank == current_state_idx) and (tier_key == _current_tier)
+        bg = state_map[regime_rank][1] if is_current else "rgba(255,255,255,0.03)"
+        opacity = "1" if is_current else "0.55"
+        border = f"2px solid {state_map[regime_rank][1]}" if is_current else "1px solid #374151"
+        return (
+            f'<td style="padding:10px; border:{border}; background-color:{bg}; opacity:{opacity}; '
+            f'font-size:12.5px; text-align:center; color:white;">{text}</td>'
+        )
+
+    header_cells = "".join(f'<th style="padding:8px; font-size:12.5px; color:#9CA3AF;">{label}</th>' for label, _ in _tiers)
+    body_rows = ""
+    for rank in range(n_states):
+        row_label = state_map[rank][0]
+        row_cells = "".join(_cell_html(rank, tier_key) for _, tier_key in _tiers)
+        body_rows += f'<tr><td style="padding:8px; font-size:12.5px; color:#D1D5DB; white-space:nowrap;">{row_label}</td>{row_cells}</tr>'
+
+    st.markdown(f"""
+    <div style="margin-top: 14px;">
+        <p style="font-size: 13px; color: #9CA3AF; margin-bottom: 6px;">📋 국면 × 확신도 대응표 (현재 판정은 진한 테두리로 표시)</p>
+        <table style="width:100%; border-collapse: collapse;">
+            <tr><th></th>{header_cells}</tr>
+            {body_rows}
+        </table>
     </div>
     """, unsafe_allow_html=True)
 
