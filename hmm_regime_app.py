@@ -14,16 +14,33 @@ st.title("🛡️ Wall Street HMM Regime Switching Model (V4 워크포워드)")
 st.caption(f"판독 기준 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (KST)")
 
 FEATURE_CANDIDATES = ["Return", "VIX_Level", "TNX_Diff", "Yield_Curve", "Credit_Stress", "Gold_Rel"]
-PALETTE = ["green", "#B8B800", "orange", "red"]
-LABELS = ["🟢 상승/안정 국면 (Safe)", "🟡 변동성 확대 (Caution)",
-          "🟠 조정 국면 (Warning)", "🔴 공포/폭락 국면 (Danger)"]
+
+# [수정] 국면 개수별 라벨 체계를 분리 정의.
+# 지난 롤링vs확장 교차검증에서 3국면 중 가운데(Caution)만 유의성이 불안정했고,
+# 극단 두 국면(Safe/Danger)은 항상 견고하게 유의미했다. 그래서 2국면을 기본값으로 승격하고,
+# 중간 라벨 없이 "안정/위험"으로 직접 대비되게 재설계한다. 3·4국면도 필요시 선택 가능하도록 유지.
+LABEL_SETS = {
+    2: [("🟢 안정 국면 (Safe)", "green"),
+        ("🔴 위험 국면 (Danger)", "red")],
+    3: [("🟢 상승/안정 국면 (Safe)", "green"),
+        ("🟡 변동성 확대 (Caution)", "#B8B800"),
+        ("🔴 위험 국면 (Danger)", "red")],
+    4: [("🟢 상승/안정 국면 (Safe)", "green"),
+        ("🟡 변동성 확대 (Caution)", "#B8B800"),
+        ("🟠 조정 국면 (Warning)", "orange"),
+        ("🔴 공포/폭락 국면 (Danger)", "red")],
+}
 
 # --- 사이드바 설정 ---
 with st.sidebar:
     st.header("⚙️ 모델 설정")
     # [최적화] 기본값 10->7년: 데이터 길이가 재학습 96회 각각의 학습 데이터 크기에 직결됨
     lookback_years = st.slider("데이터 수집 기간 (년)", min_value=5, max_value=15, value=7)
-    n_states = st.slider("국면(Regime) 개수", min_value=2, max_value=4, value=3)
+    # [수정] 기본값 3->2: 교차검증 결과 중간 국면(Caution)이 롤링/확장에 따라 유의성이
+    # 왔다갔다했고, 극단 2개(Safe/Danger)만 두 방식 모두에서 견고하게 유의했음.
+    n_states = st.slider("국면(Regime) 개수", min_value=2, max_value=4, value=2)
+    if n_states == 2:
+        st.caption("💡 2국면(안정/위험)을 기본 권장합니다 — 교차검증에서 가장 견고했던 조합입니다.")
 
     st.divider()
     st.header("🧪 학습 방식")
@@ -141,12 +158,9 @@ def get_feature_cols(df: pd.DataFrame):
 
 
 def build_state_map(n_components: int):
-    """rank(0=안정 ... n-1=공포) -> (라벨, 색상) 매핑. 모든 모드가 공유하는 표시 규칙."""
-    state_map = {}
-    for rank in range(n_components):
-        idx = min(rank, len(LABELS) - 1)
-        state_map[rank] = (LABELS[idx], PALETTE[idx])
-    return state_map
+    """rank(0=안정 ... n-1=위험) -> (라벨, 색상) 매핑. LABEL_SETS에 없는 n이면 4국면 세트를 재활용."""
+    labels = LABEL_SETS.get(n_components, LABEL_SETS[4])
+    return {rank: labels[rank] for rank in range(n_components)}
 
 
 # --- 2-A. 전체기간 일괄학습 (In-sample, 설명/참고용) ---
@@ -427,6 +441,56 @@ try:
             "늘렸을 때)은 검정력이 낮아 유의성이 잘 안 나올 수 있으니 표본수 컬럼을 함께 확인하세요. "
             "또한 국면 개수(n_states)를 조정할 때마다 결과가 크게 흔들린다면, 그 자체가 국면 구분의 "
             "안정성이 낮다는 신호입니다."
+        )
+
+        # --- [추가] 독립표본(비중첩) 재검정: 겹치는 20일 윈도우로 인한 표본 부풀림 보정 ---
+        st.markdown("##### 📏 독립표본(비중첩) 재검정 — 표본 부풀림 보정")
+        st.caption(
+            "⚠️ 위 검정은 미래 20일 수익률을 하루씩 밀려가며(겹치게) 계산한 값을 그대로 사용했습니다. "
+            "예를 들어 표본 1,000개라도 이웃한 표본끼리 19일치 데이터가 겹치므로, 실제로 독립적인 "
+            "정보량은 그보다 훨씬 적고 p-value는 실제보다 낙관적으로(과대) 나올 수 있습니다. "
+            "아래는 20거래일 간격으로 서로 안 겹치게 골라낸 표본만으로 같은 검정을 다시 수행한 결과입니다 "
+            "— 표본수는 크게 줄지만, 훨씬 현실적인(보수적인) 유의성 추정치입니다."
+        )
+
+        nonoverlap_df = analyzed_df.iloc[::20]  # 20거래일 간격 = 서로 겹치지 않는 표본만 추출
+
+        nonoverlap_rows = []
+        for r in sorted(nonoverlap_df["Regime"].unique()):
+            label = state_map[r][0]
+            this_20 = nonoverlap_df.loc[nonoverlap_df["Regime"] == r, "Fwd_Ret_20"].dropna()
+            rest_20 = nonoverlap_df.loc[nonoverlap_df["Regime"] != r, "Fwd_Ret_20"].dropna()
+
+            row = {
+                "국면": label,
+                "독립표본수": len(this_20),
+                "평균(독립표본)": this_20.mean() if len(this_20) > 0 else np.nan,
+                "중앙값(독립표본)": this_20.median() if len(this_20) > 0 else np.nan,
+            }
+            if len(this_20) >= 5 and len(rest_20) >= 5:
+                try:
+                    _, p = mannwhitneyu(this_20, rest_20, alternative="two-sided")
+                    row["p-value(독립표본)"] = p
+                except Exception:
+                    row["p-value(독립표본)"] = np.nan
+            else:
+                row["p-value(독립표본)"] = np.nan
+            nonoverlap_rows.append(row)
+
+        nonoverlap_sig_df = pd.DataFrame(nonoverlap_rows).set_index("국면")
+        st.dataframe(
+            nonoverlap_sig_df.style.format({
+                "평균(독립표본)": "{:.2%}",
+                "중앙값(독립표본)": "{:.2%}",
+                "p-value(독립표본)": "{:.4f}",
+            }, na_rep="—").map(_highlight_sig, subset=["p-value(독립표본)"])
+        )
+        st.caption(
+            "여기서도 p<0.05가 유지된다면, 위 전체표본 검정 결과가 표본 부풀림에 의한 착시가 아니라는 "
+            "뜻입니다. 반대로 전체표본에서는 유의했는데 여기서 유의성을 잃는다면, 원래 결과는 겹치는 "
+            "윈도우 때문에 과대평가됐을 가능성이 높으니 그 국면 신호는 보수적으로 취급하세요. "
+            "(참고: 20일 간격 중 임의의 한 시작점만 뽑은 결과라, 시작점을 바꾸면 표본 구성도 달라집니다 "
+            "— 정확한 값이라기보다 대략적인 규모 확인용으로 보십시오.)"
         )
 
         # --- [추가] 위기 구간별 분해: 전체기간 검정 결과가 특정 사건 하나에 쏠린 게 아닌지 확인 ---
