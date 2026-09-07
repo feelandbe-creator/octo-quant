@@ -490,7 +490,58 @@ try:
             "뜻입니다. 반대로 전체표본에서는 유의했는데 여기서 유의성을 잃는다면, 원래 결과는 겹치는 "
             "윈도우 때문에 과대평가됐을 가능성이 높으니 그 국면 신호는 보수적으로 취급하세요. "
             "(참고: 20일 간격 중 임의의 한 시작점만 뽑은 결과라, 시작점을 바꾸면 표본 구성도 달라집니다 "
-            "— 정확한 값이라기보다 대략적인 규모 확인용으로 보십시오.)"
+            "— 정확한 값이라기보다 대략적인 규모 확인용으로 보십시오. 완전한 확인은 바로 아래 "
+            "다중 시작점 검정을 참고하세요.)"
+        )
+
+        # --- [추가] 다중 시작점(Phase) 검정: 위 단일 시작점(0번째) 결과가 우연이 아닌지 확인 ---
+        st.markdown("##### 🔬 다중 시작점(Phase) 독립표본 재검정")
+        st.caption(
+            "바로 위 결과는 20일 간격 중 시작점 하나(0번째 거래일)만 골라 계산한 값입니다. "
+            "시작점을 0~19번째 거래일로 바꿔가며 20가지 조합 전부에 대해 같은 검정을 반복하면, "
+            "특정 시작점 하나의 우연에 결과가 좌우된 건 아닌지 확인할 수 있습니다."
+        )
+
+        phase_pvalues = {r: [] for r in sorted(analyzed_df["Regime"].unique())}
+        for offset in range(20):
+            phase_df = analyzed_df.iloc[offset::20]
+            for r in phase_pvalues.keys():
+                this_p = phase_df.loc[phase_df["Regime"] == r, "Fwd_Ret_20"].dropna()
+                rest_p = phase_df.loc[phase_df["Regime"] != r, "Fwd_Ret_20"].dropna()
+                if len(this_p) >= 5 and len(rest_p) >= 5:
+                    try:
+                        _, p = mannwhitneyu(this_p, rest_p, alternative="two-sided")
+                        phase_pvalues[r].append(p)
+                    except Exception:
+                        pass
+
+        phase_rows = []
+        for r, plist in phase_pvalues.items():
+            label = state_map[r][0]
+            if len(plist) == 0:
+                phase_rows.append({
+                    "국면": label, "유효 시작점 수": 0, "평균p값": np.nan,
+                    "중앙값p값": np.nan, "최댓값p값": np.nan, "p<0.05 비율": np.nan,
+                })
+                continue
+            arr = np.array(plist)
+            phase_rows.append({
+                "국면": label,
+                "유효 시작점 수": len(arr),
+                "평균p값": arr.mean(),
+                "중앙값p값": np.median(arr),
+                "최댓값p값": arr.max(),
+                "p<0.05 비율": (arr < 0.05).mean(),
+            })
+
+        phase_summary_df = pd.DataFrame(phase_rows).set_index("국면")
+        st.dataframe(phase_summary_df.style.format({
+            "평균p값": "{:.4f}", "중앙값p값": "{:.4f}", "최댓값p값": "{:.4f}", "p<0.05 비율": "{:.0%}",
+        }, na_rep="—"))
+        st.caption(
+            "'p<0.05 비율'이 100%에 가까울수록 어느 시작점을 고르든 결과가 유의미하다는 뜻이라 "
+            "신뢰도가 높습니다. 이 비율이 낮거나 '최댓값p값'이 0.05를 크게 웃돈다면, 특정 시작점에서만 "
+            "우연히 유의했던 결과일 수 있으니 그 국면 신호는 보수적으로 취급하세요."
         )
 
         # --- [추가] 위기 구간별 분해: 전체기간 검정 결과가 특정 사건 하나에 쏠린 게 아닌지 확인 ---
