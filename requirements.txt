@@ -10,3 +10,4 @@ fastdtw
 plotly
 pytz
 schedule
+statsmodels
