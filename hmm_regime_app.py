@@ -8,6 +8,12 @@ from scipy.stats import mannwhitneyu
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
+try:
+    import statsmodels.api as sm
+    _STATSMODELS_AVAILABLE = True
+except ImportError:
+    _STATSMODELS_AVAILABLE = False
+
 # 페이지 기본 설정
 st.set_page_config(page_title="Wall St. HMM Regime Engine", layout="wide")
 st.title("🛡️ Wall Street HMM Regime Switching Model (V4 워크포워드)")
@@ -543,6 +549,86 @@ try:
             "신뢰도가 높습니다. 이 비율이 낮거나 '최댓값p값'이 0.05를 크게 웃돈다면, 특정 시작점에서만 "
             "우연히 유의했던 결과일 수 있으니 그 국면 신호는 보수적으로 취급하세요."
         )
+
+        # --- [추가] Newey-West(HAC) 자기상관 보정 검정: 표본을 버리지 않는 대안 ---
+        st.markdown("##### 🧮 Newey-West(HAC) 자기상관 보정 검정 — 표본을 버리지 않는 대안")
+        st.caption(
+            "위 독립표본 재검정은 표본의 약 95%를 버려서 자기상관을 없앴습니다. Newey-West(HAC, "
+            "Heteroskedasticity and Autocorrelation Consistent) 표준오차는 전체 표본을 그대로 쓰면서, "
+            "겹치는 윈도우 때문에 생기는 자기상관을 표준오차 계산 단계에서 직접 보정합니다. "
+            "국면 더미변수로 회귀분석(y=미래수익률, x=국면 더미)을 돌리고, 그 계수의 유의성을 HAC "
+            "표준오차 기준으로 재판단합니다 — 표본을 하나도 안 버리면서 더 정직한 p-value를 얻는 방식입니다."
+        )
+
+        if not _STATSMODELS_AVAILABLE:
+            st.warning(
+                "이 검정에는 `statsmodels` 패키지가 필요합니다. requirements.txt에 `statsmodels`를 "
+                "추가하고 앱을 재배포해 주세요."
+            )
+        else:
+            def _hac_regime_test(df, target_col, max_lag):
+                """국면 더미변수 회귀 + HAC(Newey-West) 표준오차.
+                기준(baseline)은 랭크가 가장 낮은(가장 안정적인) 국면이며,
+                다른 국면 더미의 계수 = 기준 대비 평균 미래수익률 차이,
+                HAC p-value = 그 차이의 자기상관 보정 유의성."""
+                sub = df[["Regime", target_col]].dropna()
+                regimes = sorted(sub["Regime"].unique())
+                baseline = regimes[0]
+                X = pd.DataFrame(index=sub.index)
+                dummy_map = {}
+                for r in regimes[1:]:
+                    col = f"regime_{r}"
+                    X[col] = (sub["Regime"] == r).astype(float)
+                    dummy_map[r] = col
+                X = sm.add_constant(X)
+                y = sub[target_col].values
+                model = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": max_lag})
+
+                rows = [{
+                    "국면": state_map[baseline][0] + " (기준)",
+                    "기준 대비 차이": np.nan,
+                    "HAC 표준오차": np.nan,
+                    "HAC p-value": np.nan,
+                }]
+                for r, col in dummy_map.items():
+                    rows.append({
+                        "국면": state_map[r][0],
+                        "기준 대비 차이": model.params[col],
+                        "HAC 표준오차": model.bse[col],
+                        "HAC p-value": model.pvalues[col],
+                    })
+                return pd.DataFrame(rows).set_index("국면")
+
+            try:
+                # maxlags는 해당 수익률의 계산 기간(5일/20일)에서 -1을 적용
+                # (Newey-West에서 권장되는 최소 랙 길이 = 겹치는 기간 - 1)
+                hac5_df = _hac_regime_test(analyzed_df, "Fwd_Ret_5", max_lag=4)
+                hac20_df = _hac_regime_test(analyzed_df, "Fwd_Ret_20", max_lag=19)
+
+                st.markdown("**미래 5일 수익률 기준 (maxlags=4)**")
+                st.dataframe(
+                    hac5_df.style.format({
+                        "기준 대비 차이": "{:.4%}", "HAC 표준오차": "{:.4%}", "HAC p-value": "{:.4f}",
+                    }, na_rep="—").map(_highlight_sig, subset=["HAC p-value"])
+                )
+
+                st.markdown("**미래 20일 수익률 기준 (maxlags=19)**")
+                st.dataframe(
+                    hac20_df.style.format({
+                        "기준 대비 차이": "{:.4%}", "HAC 표준오차": "{:.4%}", "HAC p-value": "{:.4f}",
+                    }, na_rep="—").map(_highlight_sig, subset=["HAC p-value"])
+                )
+
+                st.caption(
+                    "'기준 대비 차이'는 기준 국면(가장 안정적인 국면) 대비 해당 국면의 평균 미래수익률 "
+                    "차이입니다. 'HAC p-value'가 이 차이의 통계적 유의성을 자기상관 보정 후 판단한 "
+                    "값입니다. 위 다중 시작점 검정의 'p<0.05 비율'과 이 값을 함께 보고 최종 결론을 "
+                    "내리세요 — 두 방식(표본 축소 vs 표준오차 보정)이 서로 다른 접근인데도 결론이 "
+                    "일치한다면 신뢰도가 한층 높아지고, 갈린다면 그 국면 신호는 아직 불확실하다고 "
+                    "보는 게 안전합니다."
+                )
+            except Exception as e:
+                st.error(f"HAC 검정 중 오류가 발생했습니다: {e}")
 
         # --- [추가] 위기 구간별 분해: 전체기간 검정 결과가 특정 사건 하나에 쏠린 게 아닌지 확인 ---
         st.markdown("##### 🗓️ 주요 위기 구간별 국면 분해 (한 사건에 결과가 쏠려 있는지 확인)")
