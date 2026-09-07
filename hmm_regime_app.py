@@ -401,7 +401,7 @@ try:
 
         st.dataframe(
             sig_df.style.format({"p-value(5일)": "{:.4f}", "p-value(20일)": "{:.4f}"})
-                          .applymap(_highlight_sig, subset=["p-value(5일)", "p-value(20일)"])
+                          .map(_highlight_sig, subset=["p-value(5일)", "p-value(20일)"])
         )
         st.caption(
             "p-value < 0.05(초록 강조)면 그 국면의 미래 수익률 분포가 나머지 국면 전체와 통계적으로 "
