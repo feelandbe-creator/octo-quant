@@ -27,6 +27,20 @@ import urllib.parse
 # 10. st.cache_data에 ttl 추가 (30분)
 # 11. RSI를 Wilder 방식(지수이동평균)으로 변경
 # 12. 옵션 OI 해석에 캐비어트 문구 추가
+#
+# --- 추가 반영 (V5.0 -> V6.0) ---
+# 13. [설계개선] DTW 매칭 피처에 종목 자신의 가격궤적을 포함
+#     (기존엔 매크로 지표만으로 국면을 매칭하고, 수익률만 종목 자체 것을 사용
+#      → "매크로 환경이 비슷하면 종목도 비슷하게 움직인다"는 검증되지 않은
+#      가정에 의존. build_weighted_features()에서 종목 자체 궤적에
+#      target_weight_share(기본 50%, 슬라이더로 조절) 비중을 고정 배분)
+# 14. [설계개선] 워크포워드 검증 모듈 신규 추가 (run_walkforward_validation)
+#     - 과거 여러 시점에서 "그 시점까지의 데이터만으로" 동일 로직을 재현해
+#       신호를 뽑고, 실제 이후 20일 수익률과 방향이 맞았는지 누적 검증
+#     - 적중률(Hit Rate), 정보계수(IC), 매수/매도 신호그룹별 평균 실제수익률을
+#       제공해 "이 전략이 과거에 진짜 예측력이 있었는가"를 별도로 확인 가능
+#     - 계산 비용 때문에 별도 버튼으로 분리, 탐색 풀을 최근 N거래일로 캡핑한
+#       근사 검증임을 명시
 # =============================================================================
 
 # --- 0. 중대 역사적 이벤트 사전 ---
@@ -157,22 +171,26 @@ def fetch_technical_indicators(ticker):
         return None
 
 
-def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=5):
+def build_weighted_features(df, macro_tickers, target_stock, window_size, target_weight_share=0.5):
     """
-    반환값에 다음이 추가됨:
-    - normalized avg distance (피처수 x 윈도우 로 정규화)
-    - 표본 수 관련 경고 플래그
+    [신규] DTW 매칭에 사용할 피처 행렬을 만든다.
+    기존에는 매크로 티커들만 매칭 대상이었으나, 이제 종목 자신의 가격궤적도
+    하나의 피처로 포함시킨다 (target_weight_share 비중만큼 고정 배분).
+    나머지 (1 - target_weight_share) 비중은 매크로 티커들이 수익률 상관관계
+    크기에 비례해 나눠 갖는다.
+
+    반환: (weighted_scaled_features, weights_dict, feature_order) 또는
+          데이터 부족 시 (None, {}, [])
     """
     if target_stock not in df.columns:
-        return [], {}, [], {"error": "target_missing"}
+        return None, {}, []
     valid_macros = [t for t in macro_tickers if t in df.columns]
     if not valid_macros:
-        return [], {}, [], {"error": "no_macro"}
+        return None, {}, []
 
-    # --- [수정 1] 상관관계는 '레벨'이 아니라 '수익률' 기준으로 계산 ---
     returns_df = df.pct_change().dropna()
     if len(returns_df) < window_size:
-        return [], {}, [], {"error": "insufficient_history"}
+        return None, {}, []
 
     recent_window_returns = returns_df.iloc[-window_size:]
     correlations = {}
@@ -182,17 +200,41 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
 
     total_corr = sum(correlations.values())
     if total_corr > 0:
-        weights = {k: v / total_corr for k, v in correlations.items()}
+        macro_weights_norm = {k: v / total_corr for k, v in correlations.items()}
     else:
-        weights = {k: 1.0 / len(valid_macros) for k in valid_macros}
+        macro_weights_norm = {k: 1.0 / len(valid_macros) for k in valid_macros}
 
-    # DTW 매칭 자체는 (스케일된) 가격 궤적 형태 비교이므로 레벨 기반 유지하되
-    # 가중치만 수익률 기반 상관관계로 산출한 값을 사용
-    macro_data = df[valid_macros]
+    target_weight_share = float(np.clip(target_weight_share, 0.0, 0.95))
+    remaining = 1.0 - target_weight_share
+    weights = {target_stock: target_weight_share}
+    for k, v in macro_weights_norm.items():
+        weights[k] = v * remaining
+
+    feature_order = valid_macros + [target_stock]
+    feature_data = df[feature_order]
     scaler = StandardScaler()
-    scaled_macro = scaler.fit_transform(macro_data)
-    weight_vector = np.array([np.sqrt(weights[ticker]) for ticker in valid_macros])
-    weighted_scaled_macro = scaled_macro * weight_vector
+    scaled = scaler.fit_transform(feature_data)
+    weight_vector = np.array([np.sqrt(weights[t]) for t in feature_order])
+    weighted_scaled = scaled * weight_vector
+
+    return weighted_scaled, weights, feature_order
+
+
+def find_top_historical_matches(df, macro_tickers, target_stock, window_size, top_n=5, target_weight_share=0.5):
+    """
+    반환값에 다음이 추가됨:
+    - normalized avg distance (피처수 x 윈도우 로 정규화)
+    - 표본 수 관련 경고 플래그
+    """
+    if target_stock not in df.columns:
+        return [], {}, [], {"error": "target_missing"}
+
+    # --- [수정] 매크로 + 종목 자신의 가격궤적을 함께 DTW 피처로 사용 ---
+    weighted_scaled_macro, weights, feature_order = build_weighted_features(
+        df, macro_tickers, target_stock, window_size, target_weight_share
+    )
+    if weighted_scaled_macro is None:
+        return [], {}, [], {"error": "insufficient_history"}
 
     current_pattern = weighted_scaled_macro[-window_size:]
 
@@ -250,10 +292,97 @@ def find_top_historical_matches(df, macro_tickers, target_stock, window_size, to
         "error": None,
         "n_clean_total": len(clean_distances),
         "n_excluded_total": len(excluded_distances),
-        "n_features": len(valid_macros),
+        "n_features": len(feature_order),
     }
 
     return top_matches, weights, top_excluded, meta
+
+
+# =============================================================================
+# --- 4. 워크포워드 검증 모듈 (신규) ---
+# "이 매칭 로직이 과거에 실제로 방향성을 맞췄는가"를 검증한다.
+# 매 테스트 시점 T마다 T 이전 데이터만으로 동일한 매칭을 재현하여 신호를
+# 뽑고, 실제 T+20일 수익률과 방향이 맞았는지를 누적 집계한다.
+# 속도를 위해 탐색 풀을 최근 pool_cap 거래일로 캡핑하고 VIX/이벤트 필터는
+# 생략한다 — 따라서 실거래 로직과 100% 동일하지 않은 "근사 검증"이다.
+# =============================================================================
+def run_walkforward_validation(df, macro_tickers, target_stock, window_size, top_n,
+                                target_weight_share=0.5, n_test_points=15, pool_cap=800):
+    total_len = len(df)
+    earliest_test_idx = max(window_size * 4, 100)
+    latest_test_idx = total_len - 20 - 1  # 실제 미래 수익률(T+20)이 존재해야 함
+
+    if latest_test_idx <= earliest_test_idx:
+        return None
+
+    candidate_range = latest_test_idx - earliest_test_idx + 1
+    n_points = min(n_test_points, candidate_range)
+    test_indices = sorted(set(
+        np.linspace(earliest_test_idx, latest_test_idx, num=n_points, dtype=int).tolist()
+    ))
+
+    results = []
+    for t in test_indices:
+        pool_start = max(0, t - pool_cap)
+        df_pool = df.iloc[pool_start:t + 1]  # T 시점까지의 데이터만 사용 (미래 누설 없음)
+
+        weighted_features, _, feature_order = build_weighted_features(
+            df_pool, macro_tickers, target_stock, window_size, target_weight_share
+        )
+        if weighted_features is None or len(weighted_features) < window_size * 3:
+            continue
+
+        current_pattern = weighted_features[-window_size:]
+        cutoff = window_size + 20
+        if len(weighted_features) <= cutoff + window_size:
+            continue
+        historical_pool = weighted_features[:-cutoff]
+
+        distances = []
+        for i in range(len(historical_pool) - window_size):
+            past_window = historical_pool[i:i + window_size]
+            dist, _ = fastdtw(current_pattern, past_window, dist=euclidean)
+            distances.append((i, dist))
+        distances.sort(key=lambda x: x[1])
+
+        matches, selected = [], []
+        for idx, dist in distances:
+            if len(matches) >= top_n:
+                break
+            if any(abs(idx - s) < window_size for s in selected):
+                continue
+            matches.append((idx, dist))
+            selected.append(idx)
+        if not matches:
+            continue
+
+        match_returns = []
+        for idx, _ in matches:
+            p_c = df_pool[target_stock].iloc[idx + window_size]
+            p_f = df_pool[target_stock].iloc[idx + window_size + 20]
+            if p_c and not np.isnan(p_c) and p_c != 0:
+                match_returns.append(((p_f - p_c) / p_c) * 100)
+        if not match_returns:
+            continue
+
+        predicted_avg = float(np.mean(match_returns))
+        predicted_dir = 1 if predicted_avg > 0 else -1
+
+        p_now = df[target_stock].iloc[t]
+        p_future = df[target_stock].iloc[t + 20]
+        if not p_now or np.isnan(p_now) or p_now == 0:
+            continue
+        actual_return = float(((p_future - p_now) / p_now) * 100)
+        actual_dir = 1 if actual_return > 0 else -1
+
+        results.append({
+            "date": df.index[t],
+            "predicted_return": predicted_avg,
+            "actual_return": actual_return,
+            "hit": predicted_dir == actual_dir,
+        })
+
+    return results
 
 
 # --- 3. UI/UX 대시보드 ---
@@ -269,7 +398,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="report-title">🛡️ AI 퀀트 터미널 : V5.0 (옥토만경)</div>', unsafe_allow_html=True)
+st.markdown('<div class="report-title">🛡️ AI 퀀트 터미널 : V6.0 (옥토만경)</div>', unsafe_allow_html=True)
 st.markdown('<div class="report-subtitle">실시간 정량적 실전 매매 지침 및 파생(OI) 수급 추적 엔진 탑재 리포트</div>', unsafe_allow_html=True)
 
 with st.expander("🎛️ 분석 설정", expanded=True):
@@ -282,6 +411,13 @@ with st.expander("🎛️ 분석 설정", expanded=True):
     with col2:
         top_n_input = st.selectbox("유사 국면 매칭 개수 (N)", options=[3, 4, 5, 6, 7], index=2)
         lookback_years = st.selectbox("역사적 데이터 탐색 깊이 (년)", options=[5, 8, 10, 12, 15, 20], index=4)
+
+    target_weight_share = st.slider(
+        "매칭 시 '종목 자신의 궤적' 가중치 비중",
+        min_value=0.2, max_value=0.8, value=0.5, step=0.1,
+        help="높일수록 '내 종목의 과거 유사 패턴'을 우선 찾고, 낮출수록 '비슷한 거시환경이었던 국면'을 우선 찾습니다. "
+             "나머지 비중은 매크로 티커들이 최근 수익률 상관관계 크기에 비례해 나눠 가집니다."
+    )
 
     run_sim = st.button("⚙️ 시뮬레이션 시작", use_container_width=True, type="primary")
 
@@ -306,7 +442,8 @@ if run_sim:
             st.caption(f"⚠️ 데이터 수신 실패 티커 (분석에서 제외됨): {', '.join(failed_tickers)}")
 
         top_matches, feature_weights, top_excluded, meta = find_top_historical_matches(
-            df, macro_tickers, target_stock, window_size=window, top_n=top_n_input
+            df, macro_tickers, target_stock, window_size=window, top_n=top_n_input,
+            target_weight_share=target_weight_share
         )
 
         if meta.get("error") == "insufficient_history":
@@ -622,8 +759,130 @@ if run_sim:
         )
         st.plotly_chart(path_fig, use_container_width=True)
 
-        st.markdown('<div class="section-header">🔍 4. 거시 지표 가중치 분석 (수익률 상관관계 기준)</div>', unsafe_allow_html=True)
-        st.markdown("**현재 시장을 지배하는 매크로 변수 동적 가중치** (일별 수익률 상관관계로 산출)")
-        weight_fig = go.Figure([go.Bar(x=list(feature_weights.keys()), y=list(feature_weights.values()), marker_color='#3B82F6')])
+        st.markdown('<div class="section-header">🔍 4. 매칭 피처 가중치 분석 (종목 자체 궤적 + 거시지표)</div>', unsafe_allow_html=True)
+        st.markdown(f"**DTW 매칭에 사용된 피처별 가중치** — `{target_stock}` 자신의 궤적에 **{target_weight_share*100:.0f}%**, 나머지를 매크로 티커들이 수익률 상관관계 크기에 비례해 분배")
+        weight_labels = [f"★ {target_stock} (자체 궤적)" if k == target_stock else k for k in feature_weights.keys()]
+        weight_colors = ["#EF4444" if k == target_stock else "#3B82F6" for k in feature_weights.keys()]
+        weight_fig = go.Figure([go.Bar(x=weight_labels, y=list(feature_weights.values()), marker_color=weight_colors)])
         weight_fig.update_layout(height=250, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', xaxis=dict(tickfont=dict(color="#9CA3AF")), yaxis=dict(tickfont=dict(color="#9CA3AF")))
         st.plotly_chart(weight_fig, use_container_width=True)
+
+        # --- 워크포워드 검증에서 재사용할 수 있도록 설정을 세션에 저장 ---
+        st.session_state["wf_ready"] = True
+        st.session_state["wf_df"] = df
+        st.session_state["wf_macro_tickers"] = macro_tickers
+        st.session_state["wf_target_stock"] = target_stock
+        st.session_state["wf_window"] = window
+        st.session_state["wf_top_n"] = top_n_input
+        st.session_state["wf_target_weight_share"] = target_weight_share
+
+# =============================================================================
+# --- 5. 워크포워드 검증 (전략 자체의 과거 예측력 검증) ---
+# 위 리포트와 별개로, "이 매칭 로직이 과거에 실제로 방향을 맞췄는가"를
+# 별도 버튼으로 검증합니다. 계산량이 커서 기본 리포트와 분리했습니다.
+# =============================================================================
+st.markdown('<div class="section-header">🧪 5. 워크포워드 검증 (전략 자체의 과거 예측력 검증)</div>', unsafe_allow_html=True)
+
+if not st.session_state.get("wf_ready"):
+    st.info("먼저 위에서 '⚙️ 시뮬레이션 시작'을 1회 실행하면, 그 설정(종목/윈도우/가중치)으로 워크포워드 검증을 돌릴 수 있습니다.")
+else:
+    st.markdown(
+        '<div class="caveat-box">⚠️ <b>이 검증은 근사치입니다.</b> 속도를 위해 매 시점마다 탐색 풀을 최근 800거래일로 제한하고, '
+        'VIX·이벤트 배제 필터는 생략했습니다. 위 리포트와 완전히 동일한 로직은 아니지만, '
+        '"매크로+자체궤적 DTW 매칭"이라는 핵심 아이디어 자체에 방향성 예측력이 있는지를 대략적으로 확인하는 용도입니다.</div>',
+        unsafe_allow_html=True
+    )
+    wf_col1, wf_col2 = st.columns(2)
+    with wf_col1:
+        n_test_points = st.selectbox("검증 시점 개수", options=[10, 15, 20, 30], index=1)
+    with wf_col2:
+        pool_cap = st.selectbox("탐색 풀 크기 (최근 N거래일, 클수록 느려짐)", options=[500, 800, 1200, 1500], index=1)
+
+    run_wf = st.button("🧪 워크포워드 검증 실행", use_container_width=True)
+
+    if run_wf:
+        with st.spinner(f"과거 {n_test_points}개 시점에서 매칭 로직을 재현하여 검증 중... (시간이 다소 걸릴 수 있습니다)"):
+            wf_results = run_walkforward_validation(
+                st.session_state["wf_df"],
+                st.session_state["wf_macro_tickers"],
+                st.session_state["wf_target_stock"],
+                st.session_state["wf_window"],
+                st.session_state["wf_top_n"],
+                target_weight_share=st.session_state["wf_target_weight_share"],
+                n_test_points=n_test_points,
+                pool_cap=pool_cap,
+            )
+
+        if not wf_results:
+            st.error("⚠️ 검증에 필요한 데이터가 부족합니다. 탐색 깊이를 늘리거나 윈도우를 줄여보세요.")
+        else:
+            n_tests = len(wf_results)
+            hit_rate = np.mean([r["hit"] for r in wf_results]) * 100
+            predicted = np.array([r["predicted_return"] for r in wf_results])
+            actual = np.array([r["actual_return"] for r in wf_results])
+            ic = float(np.corrcoef(predicted, actual)[0, 1]) if n_tests >= 3 else float("nan")
+
+            bullish_mask = predicted > 0
+            bearish_mask = ~bullish_mask
+            bullish_avg = float(np.mean(actual[bullish_mask])) if bullish_mask.any() else float("nan")
+            bearish_avg = float(np.mean(actual[bearish_mask])) if bearish_mask.any() else float("nan")
+
+            if n_tests < MIN_RELIABLE_SAMPLE:
+                st.markdown(
+                    f'<div class="caveat-box">📊 검증 시점이 {n_tests}개뿐이라 아래 수치의 통계적 신뢰도는 낮습니다.</div>',
+                    unsafe_allow_html=True
+                )
+
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.markdown(f"""
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">방향 적중률</div>
+                    <div style="color: {'#EF4444' if hit_rate >= 50 else '#3B82F6'}; font-size: 26px; font-weight: 700;">{hit_rate:.1f}%</div>
+                    <div style="color: #6B7280; font-size: 12px;">(50%는 동전 던지기 수준)</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with m2:
+                ic_str = f"{ic:+.3f}" if not np.isnan(ic) else "N/A"
+                st.markdown(f"""
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">정보계수 (IC)</div>
+                    <div style="color: #F9FAFB; font-size: 26px; font-weight: 700;">{ic_str}</div>
+                    <div style="color: #6B7280; font-size: 12px;">(0에 가까우면 예측력 없음)</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with m3:
+                st.markdown(f"""
+                <div style="text-align: center; background-color: rgba(255,255,255,0.03); padding: 20px; border-radius: 8px; border: 1px solid #374151;">
+                    <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 5px;">검증 시점 수</div>
+                    <div style="color: #F9FAFB; font-size: 26px; font-weight: 700;">{n_tests}개</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metric-card">
+                <b style='color:#F9FAFB;'>신호 그룹별 실제 평균 수익률 (분리도가 클수록 신호가 유효)</b><br><br>
+                • 매칭 결과가 <b style='color:#EF4444;'>매수 신호</b>였던 시점들의 실제 평균 20일 수익률: <b style='color:#EF4444;'>{bullish_avg:+.2f}%</b> ({int(bullish_mask.sum())}회)<br>
+                • 매칭 결과가 <b style='color:#3B82F6;'>매도 신호</b>였던 시점들의 실제 평균 20일 수익률: <b style='color:#3B82F6;'>{bearish_avg:+.2f}%</b> ({int(bearish_mask.sum())}회)
+            </div>
+            """, unsafe_allow_html=True)
+
+            wf_fig = go.Figure()
+            colors = ["#EF4444" if r["hit"] else "#6B7280" for r in wf_results]
+            wf_fig.add_trace(go.Scatter(
+                x=predicted, y=actual, mode="markers",
+                marker=dict(size=10, color=colors),
+                text=[r["date"].strftime("%Y-%m-%d") for r in wf_results],
+                hovertemplate="%{text}<br>예측: %{x:.2f}%<br>실제: %{y:.2f}%<extra></extra>"
+            ))
+            wf_fig.add_hline(y=0, line=dict(color="#4B5563", dash="dot"))
+            wf_fig.add_vline(x=0, line=dict(color="#4B5563", dash="dot"))
+            wf_fig.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=30, b=10),
+                title=dict(text="예측 수익률 vs 실제 수익률 (붉은 점 = 방향 적중)", font=dict(color="#D1D5DB", size=13)),
+                xaxis=dict(title="예측 평균 수익률(%)", showgrid=True, gridcolor='#374151', title_font=dict(color="#9CA3AF"), tickfont=dict(color="#9CA3AF")),
+                yaxis=dict(title="실제 20일 수익률(%)", showgrid=True, gridcolor='#374151', title_font=dict(color="#9CA3AF"), tickfont=dict(color="#9CA3AF")),
+            )
+            st.plotly_chart(wf_fig, use_container_width=True)
